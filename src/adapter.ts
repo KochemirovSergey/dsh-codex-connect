@@ -3,8 +3,9 @@
 import { defaultProviderAuthContext, InMemoryCredentialStore } from '@earendil-works/pi-ai'
 import type { Context as PiContext, Provider, SimpleStreamOptions } from '@earendil-works/pi-ai'
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex'
+import { codexProviderContext } from './pi-context.ts'
 import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
-import type { GenerateOptions, PreparedAdapterCall, StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, GenerateOptions, PreparedAdapterCall, StreamChunk } from '@deepseek-ai/dsh-llm'
 import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
@@ -22,12 +23,14 @@ import type { ReserveRequestPermits } from './reserve-state.ts'
 import { OPENAI_CODEX_RESERVE_MODEL, OPENAI_CODEX_RESERVE_NORMAL_MODEL } from './reserve-usage.ts'
 import { streamWithNativeCompactionScope, withOpenAICodexNativeCompaction } from './native-compaction.ts'
 import { streamWithCodexRequestDiagnostics, withCodexDiagnosticFetch } from './request-diagnostics.ts'
-import { withAdaptiveTaskProvider } from './adaptive-task-scope.ts'
+import { imageSelectionHandleText } from './image-input-contract.ts'
 
 export { OPENAI_CODEX_ASTRA_MODEL_ID, OPENAI_CODEX_TRANSPORT, openAICodexModelCatalog, withOpenAICodexAstra, withOpenAICodexModels } from './model-catalog.ts'
 
 /** Omission preserves ordinary dispatch; authority stays with the live task runtime. */
 export interface OpenAICodexTaskDispatch {
+  /** Explicit legacy-task provider policy; ordinary profiles do not import it. */
+  wrapProvider?: (provider: Provider) => Provider
   stream(options: GenerateOptions, delegate: (next: GenerateOptions) => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
 }
 
@@ -105,14 +108,16 @@ function requestProvider(
   proxyManager?: OpenAICodexProxyManager,
   resolveProxyUrl?: () => string | undefined,
   backendRequests?: OpenAICodexBackendRequests,
+  wrapProvider?: (provider: Provider) => Provider,
 ): Provider {
-  const configured = withAdaptiveTaskProvider(withOpenAICodexFastMode(withOpenAICodexNativeCompaction(provider), fastMode))
+  const ordinary = withOpenAICodexFastMode(withOpenAICodexNativeCompaction(provider), fastMode)
+  const configured = wrapProvider === undefined ? ordinary : wrapProvider(ordinary)
   const streamSimple = configured.streamSimple
   return {
     ...configured,
     streamSimple(model, context: PiContext, options?: SimpleStreamOptions) {
       const proxyUrl = resolveProxyUrl?.()
-      const operation = () => streamSimple.call(configured, model, context, withCodexDiagnosticFetch(options, backendRequests))
+      const operation = () => streamSimple.call(configured, model, codexProviderContext(context), withCodexDiagnosticFetch(options, backendRequests))
       return backendRequests?.runStream(operation) ?? proxyManager?.runStream(proxyUrl, operation) ?? operation()
     },
     auth: {
@@ -138,6 +143,7 @@ export function createOpenAICodexProfile(
   resolveProxyUrl?: () => string | undefined,
   contextWindowOverrides?: Readonly<Record<string, number>> | undefined,
   backendRequests?: OpenAICodexBackendRequests,
+  wrapProvider?: (provider: Provider) => Provider,
 ): ResolvedPiAiProviderProfile & { piProvider: Provider } {
   const effectiveProvider = contextWindowOverrides === undefined
     ? provider
@@ -153,7 +159,7 @@ export function createOpenAICodexProfile(
     retryPolicy: resolveRetryPolicy(undefined, 'dsh-codex-connect retryPolicy'),
     configuredMaxTokens: new Map(),
     modelErrors: new Map<string, string>(),
-    piProvider: requestProvider(effectiveProvider, fastMode, proxyManager, resolveProxyUrl, backendRequests),
+    piProvider: requestProvider(effectiveProvider, fastMode, proxyManager, resolveProxyUrl, backendRequests, wrapProvider),
   }
   return profile
 }
@@ -199,6 +205,27 @@ export function assertOpenAICodexContextWindowOverrides(
  * resolution, streaming, reasoning metadata, and compaction behavior; this
  * plugin supplies its provider-native OAuth token for each request.
  */
+/** Add stable selection handles next to request images without mutating durable messages. */
+export function withOpenAICodexImageSelectionHandles(options: GenerateOptions): GenerateOptions {
+  let changed = false
+  const messages = options.messages.map(message => {
+    let imageIndex = 0
+    let contentChanged = false
+    const content: ContentBlock[] = []
+    for (const block of message.content) {
+      content.push(block)
+      if (block.type !== 'image') continue
+      imageIndex += 1
+      content.push({ type: 'text', text: imageSelectionHandleText(imageIndex, block.attachment) })
+      contentChanged = true
+    }
+    if (!contentChanged) return message
+    changed = true
+    return { ...message, content }
+  })
+  return changed ? { ...options, messages } : options
+}
+
 export function createOpenAICodexAdapter(
   credentials: OpenAICodexCredentialStore,
   resolveAttachments: () => AttachmentStore | undefined,
@@ -211,6 +238,7 @@ export function createOpenAICodexAdapter(
   nativeCompactionEnabled?: () => boolean,
   backendRequests?: OpenAICodexBackendRequests,
   taskDispatch?: OpenAICodexTaskDispatch,
+  imageEditingEnabled?: () => boolean,
 ): PiAiAdapter {
   const baseline = withOpenAICodexModels(openaiCodexProvider())
   const provider = reservePermits === undefined ? baseline : withOpenAICodexReserve(baseline, reservePermits)
@@ -219,7 +247,7 @@ export function createOpenAICodexAdapter(
   const currentProfiles = (): Map<string, ResolvedPiAiProviderProfile> => {
     const overrides = contextWindowOverrides?.()
     if (profiles === undefined || !deepEqualJson(previousOverrides, overrides)) {
-      const profile = createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, overrides, backendRequests)
+      const profile = createOpenAICodexProfile(provider, fastMode, proxyManager, resolveProxyUrl, overrides, backendRequests, taskDispatch?.wrapProvider)
       previousOverrides = overrides === undefined ? undefined : { ...overrides }
       // PiAiAdapter keys snapshots by map identity; captured calls keep the old map.
       profiles = new Map([[OPENAI_CODEX_PROVIDER, profile]])
@@ -231,9 +259,13 @@ export function createOpenAICodexAdapter(
       stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>,
       options: GenerateOptions,
     ): AsyncIterable<StreamChunk> {
-      const dispatch = (request: GenerateOptions) => streamWithCodexRequestDiagnostics(
-        next => streamWithNativeCompactionScope(stream, next, nativeCompactionEnabled?.() === true), request,
-      )
+      const dispatch = (request: GenerateOptions) => {
+        const projected = imageEditingEnabled?.() === true ? withOpenAICodexImageSelectionHandles(request) : request
+        const observed = (nextOptions: GenerateOptions) => streamWithCodexRequestDiagnostics(
+          next => streamWithNativeCompactionScope(stream, next, nativeCompactionEnabled?.() === true), nextOptions,
+        )
+        return backendRequests?.metrics?.stream(observed, projected) ?? observed(projected)
+      }
       return taskDispatch?.stream(options, dispatch) ?? dispatch(options)
     }
 
@@ -250,7 +282,13 @@ export function createOpenAICodexAdapter(
     }
 
     override async listModels(providerId: string) {
-      const catalog = (await super.listModels(providerId)).filter(model => model.id !== OPENAI_CODEX_RESERVE_MODEL)
+      // Codex advertises a static catalog even while signed out. alpha.3's
+      // generic Host listing resolves credentials; only request dispatch may
+      // capture/refresh our account. Project our current provider metadata here.
+      const provider = currentProfiles().get(providerId)?.piProvider
+      if (provider === undefined) return super.listModels(providerId)
+      const catalog = provider.getModels().filter(model => model.id !== OPENAI_CODEX_RESERVE_MODEL)
+        .map(model => ({ provider: providerId, id: model.id, name: model.name, inputModalities: [...model.input] }))
       const configured = visibleModelIds?.()
       if (configured === undefined) return catalog
       const visible = new Set(configured)

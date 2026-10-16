@@ -39,14 +39,14 @@ for (const dependencies of [{}, { '@deepseek-ai/dsh-code-runtime': 'fixture', '@
 
 assertContract('declared canary checks the full same-artifact matrix without a stale version override', /run: pnpm --silent run check:dsh-matrix/u.test(declaredWorkflow) && !/DSH_VERSION:/u.test(declaredWorkflow))
 assertContract('package exposes the declared matrix check', packageJson.scripts?.['check:dsh-matrix'] === 'node scripts/check-dsh-matrix.mjs')
-const matrixVersions = ['0.1.7-rc.1']
+const matrixVersions = ['0.1.7-rc.1', '0.1.7-rc.2']
 const matrixReports = matrixVersions.map(dshVersion => ({
   schemaVersion: 1, dshVersion, plugin: 'dsh-codex-connect', pluginVersion: '0.1.0-alpha.4.43',
   pluginArtifactSha256: 'a'.repeat(64), defaultsUnchanged: true,
   capabilities: { enableProxy: false, enableSearch: false, enableReserveFallback: false, enableNativeCompaction: false, enableImageTool: false, enableImageGeneration: false, enableAutoReview: false },
   runtime: { schemaVersion: 1, provider: 'openai-codex', modelCount: 8, reasoningModelCount: 8, preparedModelCount: 8, disposalVerified: true, reserveTransitionsVerified: true,
     nativeCompactionLifecycle: { syntheticOnly: true, freshProcesses: 10, encodings: ['none', 'zstd'], phases: ['write', 'resume-fork', 'verify-child', 'failure-paths', 'automatic'] },
-    images: { syntheticOnly: true, generated: 2, codeRuns: 1, dispatchEvent: 'tool/code-dispatch', originalDownloadVerified: true, inheritedOriginalVerified: true, earlierForkDenied: true, unrelatedSessionDenied: true, realProviderRequests: 0 },
+    images: { syntheticOnly: true, generated: 2, edited: 2, codeRuns: 2, editSourcesVerified: true, inheritedEditVerified: true, invalidEditRefused: true, selectionHandlesVerified: true, dispatchEvent: 'tool/code-dispatch', originalDownloadVerified: true, inheritedOriginalVerified: true, earlierForkDenied: true, unrelatedSessionDenied: true, realProviderRequests: 0 },
   },
 }))
 validateDshMatrix(matrixReports, matrixVersions, '0.1.0-alpha.4.43')
@@ -55,6 +55,11 @@ for (const [name, change] of [
   ['patched host represented as stock', reports => { reports[0].hostPackageCandidate = { package: '@deepseek-ai/dsh-plugin-manager' } }],
   ['missing enabled image proof', reports => { delete reports[0].runtime.images }],
   ['missing fork denial', reports => { reports[0].runtime.images.earlierForkDenied = false }],
+  ['missing edit calls', reports => { delete reports[0].runtime.images.edited }],
+  ['missing edit sources', reports => { delete reports[0].runtime.images.editSourcesVerified }],
+  ['missing inherited edit', reports => { reports[0].runtime.images.inheritedEditVerified = false }],
+  ['missing invalid-edit refusal', reports => { reports[0].runtime.images.invalidEditRefused = false }],
+  ['missing cross-route image handles', reports => { delete reports[0].runtime.images.selectionHandlesVerified }],
   ['unexpected real image request', reports => { reports[0].runtime.images.realProviderRequests = 1 }],
   ['invalid package bytes', reports => { reports[0].pluginArtifactSha256 = 'not-a-digest' }],
   ['wrong host version', reports => { reports[0].dshVersion = '0.1.7-alpha.1' }],
@@ -118,8 +123,8 @@ assertContract('candidate failure retries the same shared snapshot once', /steps
 assertContract('candidate tracking runs after successful and failed checks', /Record candidate tracking state[\s\S]*?if: always\(\) && steps\.first-canary\.outcome != 'skipped'/.test(workflow))
 assertContract('candidate tracking reads an optional retry report through the tested helper', /canary-tracking\.mjs[\s\S]*?existsSync\(process\.env\.SECOND_REPORT\)[\s\S]*?buildCanaryTrackingIssue\(first, second/.test(workflow))
 assertContract('issues are deduplicated by candidate version', /listForRepo[\s\S]*?issue\.body\?\.includes\(tracking\.marker\)/.test(workflow))
-assertContract('closed alerts are reopened instead of duplicated', /existing\.state === 'closed'[\s\S]*?state: 'open'/.test(workflow))
-assertContract('unchanged tracker state and title do not rewrite an open issue', /existing\.body\?\.includes\(tracking\.stateMarker\) && existing\.title === tracking\.title[\s\S]*?no update is needed/.test(workflow))
+assertContract('eligible closed alerts are reopened instead of duplicated', /action === 'reopen'[\s\S]*?state: 'open'/.test(workflow))
+assertContract('tracker reconciliation uses evidence and respects not-planned decisions', /canaryTrackerAction\(existing, tracking\)[\s\S]*?action === 'suppressed'[\s\S]*?action === 'unchanged'/.test(workflow))
 assertContract('tracker state changes preserve unrelated labels', /new Set\(existing\.labels[\s\S]*?labels\.delete\('bug'\)[\s\S]*?labels\.delete\('enhancement'\)[\s\S]*?labels\.add\(tracking\.label\)/.test(workflow))
 assertContract('open trackers receive a changed bounded state', /github\.rest\.issues\.update\([\s\S]*?issue_number: existing\.number,[\s\S]*?body: tracking\.body,[\s\S]*?Updated DSH candidate tracker/.test(workflow))
 assertContract('confirmed failure leaves the workflow failed', /Fail after two unsuccessful checks[\s\S]*?run: exit 1/.test(workflow))

@@ -1,5 +1,6 @@
 /** Real host + pi-ai + shared governor + private ledger/artifacts. Synthetic wire only. */
 import { randomUUID } from 'node:crypto'
+import { reserveAdaptiveTaskAttempt, withAdaptiveTaskProvider } from '../src/adaptive-task-scope.ts'
 import { mkdtemp, rm, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,7 +13,8 @@ import Sessions, { SessionId } from '@deepseek-ai/dsh-session'
 import Projection from '@deepseek-ai/dsh-session-projection'
 import Prompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
-import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { selectPersistencePlugin } from '../scripts/persistence-plugin-fixture.mjs'
 import Meter from '@deepseek-ai/dsh-token-meter'
 import Compaction from '@deepseek-ai/dsh-compaction-basic'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -60,7 +62,7 @@ async function setup(options: { compression?: 'none' | 'zstd'; persistence?: boo
   const ctx = new Context(); contexts.push(ctx)
   for (const plugin of [Llm, Sessions, Projection, AgentRegistry, Prompt, Tools]) await ctx.plugin(plugin)
   await ctx.plugin(AgentLoop, { agents: [] })
-  if (options.persistence !== false) await ctx.plugin(Persistence, { root: join(root, 'sessions'), compression: options.compression ?? 'none' })
+  if (options.persistence !== false) await ctx.plugin(selectPersistencePlugin(Persistence), { root: join(root, 'sessions'), compression: options.compression ?? 'none' })
   const credentials = new OpenAICodexCredentialStore(join(root, '.synthetic-oauth.json'))
   const claim = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-delegation' } })).toString('base64url')
   await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: `e30.${claim}.fixture`, refresh: 'fixture', accountId: 'synthetic-delegation', expires: Date.now() + 3600000 }))
@@ -68,10 +70,10 @@ async function setup(options: { compression?: 'none' | 'zstd'; persistence?: boo
   const artifacts = new TaskDelegationArtifacts(join(root, 'artifacts'))
   const runtime = new AdaptiveTaskDelegation(ctx, { ledger, host, artifacts: () => artifacts })
   let dispatch = runtime
-  const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, () => dispatch.reserveAuxiliary())
+  const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, () => dispatch.reserveAuxiliary(), undefined, reserveAdaptiveTaskAttempt)
   ctx.effect(() => () => governor.dispose())
   const adapter = createOpenAICodexAdapter(credentials, () => undefined, undefined, undefined, undefined, undefined, undefined, undefined, () => options.nativeCompaction === true, governor,
-    { stream: (options, delegate) => dispatch.stream(options, delegate) })
+    { wrapProvider: withAdaptiveTaskProvider, stream: (options, delegate) => dispatch.stream(options, delegate) })
   ctx.llm.registerAdapter(['openai-codex'], adapter)
   const handle = await ctx.agents.create({ sessionId: SessionId('delegation-root'), meta: { cwd: root },
     agentOptions: { provider: 'openai-codex', model: route.model, reasoningEffort: ReasoningEffortId(route.effort) } })

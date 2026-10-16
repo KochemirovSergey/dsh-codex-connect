@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { BROWSER_REQUEST_TIMEOUT_MS } from '../src/client/request-json.ts'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
@@ -69,9 +71,22 @@ const standard = {
   useWorkspaces: vi.fn(),
 } as unknown as Omit<CodexImageToolViewProps, 'block' | 't' | 'sessions'>
 
-afterEach(() => { cleanup(); actionPrompt.mockClear(); actionCancel.mockClear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+afterEach(() => { cleanup(); vi.useRealTimers(); actionPrompt.mockClear(); actionCancel.mockClear(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('Codex image Tool view', () => {
+  it('PR272 review: shows the safe actionable reason for a rejected edit selection', () => {
+    const reason = 'Error: Target image: is unavailable or does not match a reference in this session. Select or attach the image again.'
+    render(<CodexImageToolView {...standard} t={t} sessions={actionSessions} block={{
+      kind: 'tool-result', seq: 2, time: 2, callId: 'call-1', callTime: 1, subCalls: [], isError: true,
+      call: { name: 'codex_connect_image_generate', argsRaw: JSON.stringify({ operation: 'edit', prompt: 'Change the sky', target: { attachmentId: 'sha256:absent' } }) },
+      content: [{ type: 'text', text: reason }], error: { name: 'Error', code: 'UNKNOWN' },
+    }} />)
+    expect(screen.getByText(en.failed)).toBeTruthy()
+    expect(screen.getByText(reason)).toBeTruthy()
+    expect(screen.getByText(en.imageInputRecovery)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: en.retryImageEdit })).toBeNull()
+  })
+
   it.each([false, true])('renders and downloads a nested PTC result (exact original: %s)', async (exact) => {
     vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:ptc'), revokeObjectURL: vi.fn() })
     const content = [
@@ -172,7 +187,7 @@ describe('Codex image Tool view', () => {
     await waitFor(() => { expect(fetchOriginal).toHaveBeenCalledOnce() })
     expect(fetchOriginal).toHaveBeenCalledWith(
       `/plugins/dsh-codex-connect/images/original?sessionId=session-1&assetId=${original.assetId}`,
-      { method: 'GET', headers: { accept: 'image/png' }, credentials: 'same-origin' },
+      { method: 'GET', headers: { accept: 'image/png' }, credentials: 'same-origin', signal: expect.any(AbortSignal) },
     )
     await waitFor(() => { expect(click).toHaveBeenCalledOnce() })
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:original-image')
@@ -294,7 +309,7 @@ describe('Codex image Tool view', () => {
     expect(actionPrompt).not.toHaveBeenCalledWith([{ type: 'text', text: laterPrompt }], 'queue')
   })
 
-  it('offers regenerate and edit follow-ups after success', async () => {
+  it('prepares an explicit selected preview edit without submitting on click', async () => {
     const prompt = 'a glass city at dawn'
     render(<CodexImageToolView {...standard} t={t} sessions={actionSessions} block={{ kind: 'tool-result', seq: 2, time: 2, callId: 'call-1', call: null, callTime: 1, content: [], isError: false, meta: { kind: 'codex-connect-images', prompt, images: [image] }, subCalls: [] }} />)
     fireEvent.click(screen.getByRole('button', { name: en.regenerate }))
@@ -302,8 +317,15 @@ describe('Codex image Tool view', () => {
     expect(actionPrompt).toHaveBeenCalledWith([{ type: 'text', text: prompt }], 'queue')
     actionPrompt.mockClear()
     fireEvent.click(screen.getByRole('button', { name: en.editImage }))
+    expect(actionPrompt).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByRole('textbox', { name: en.editInstructions }), { target: { value: 'change only the sky' } })
+    expect(screen.getByRole('button', { name: en.submitImageEdit })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('checkbox', { name: en.choosePreviewEdit }))
+    fireEvent.click(screen.getByRole('button', { name: en.submitImageEdit }))
     await waitFor(() => { expect(actionPrompt).toHaveBeenCalledOnce() })
-    expect(actionPrompt).toHaveBeenCalledWith([{ type: 'text', text: `${prompt}\n\n${en.editRequest}` }], 'queue')
+    const text = (actionPrompt.mock.calls[0] as unknown as [Array<{ text: string }>])[0][0]!.text
+    expect(JSON.parse(text.slice(text.indexOf('\n') + 1))).toEqual({ operation: 'edit', prompt: 'change only the sky',
+      target: { attachmentId: image.attachmentId, usePreview: true }, references: [] })
   })
 
   it('renders fixed canceled and redacted failure states', () => {
@@ -315,5 +337,105 @@ describe('Codex image Tool view', () => {
     rerender(<CodexImageToolView {...standard} t={t} sessions={sessions} block={{ ...base, content: [{ type: 'text', text: 'private response' }], isError: true, error: { name: 'Error', code: 'UNKNOWN' } }} />)
     expect(screen.getByText(en.failed)).toBeTruthy()
     expect(screen.queryByText('private response')).toBeNull()
+  })
+  it('does not render raw upstream content even when it begins with a known safe reason', () => {
+    const secret = 'Bearer PRIVATE_TEST_TOKEN /Users/private-account/image.png'
+    const raw = 'Error: Target image: is unavailable or does not match a reference in this session. Select or attach the image again. ' + secret
+    render(<CodexImageToolView {...standard} t={t} sessions={actionSessions} block={{
+      kind: 'tool-result', seq: 2, time: 2, callId: 'call-1', callTime: 1, subCalls: [], isError: true,
+      call: { name: 'codex_connect_image_generate', argsRaw: JSON.stringify({ operation: 'edit', prompt: 'Change the sky', target: { attachmentId: 'sha256:absent' } }) },
+      content: [{ type: 'text', text: raw }], error: { name: 'Error', code: 'UNKNOWN' },
+    }} />)
+    expect(screen.getByText(en.imageUnknownFailure)).toBeTruthy()
+    expect(document.body.textContent).not.toContain(secret)
+    expect(document.body.textContent).not.toContain(raw)
+  })
+
+})
+
+
+function originalBlock(ref = original): CodexImageToolViewProps['block'] {
+  return { kind: 'tool-result', seq: 2, time: 2, callId: 'call-1', call: null, callTime: 1,
+    content: [], isError: false, subCalls: [], meta: { kind: 'codex-connect-images', schemaVersion: 1,
+      prompt: 'original download', images: [{ original: ref, preview: image }] } }
+}
+
+describe('bounded original image recovery', () => {
+  it.each(['headers', 'blob'] as const)('times out hung %s, ignores late completion and retries explicitly in StrictMode', async phase => {
+    vi.useFakeTimers()
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    let resolve!: (value: any) => void
+    let signal: AbortSignal | null | undefined
+    const stalled = new Promise<any>(done => { resolve = done })
+    const blob = new Blob([new Uint8Array([1, 2, 3])])
+    const response = { ok: true, blob: async () => blob }
+    const fetchMock = vi.fn((_path: string, init: RequestInit) => {
+      signal = init.signal
+      return phase === 'headers' ? stalled : Promise.resolve({ ok: true, blob: () => stalled })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<StrictMode><CodexImageToolView {...standard} t={t} sessions={sessions} block={originalBlock()} /></StrictMode>)
+    await act(async () => {})
+    const created = vi.mocked(URL.createObjectURL).mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: en.downloadOriginal }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(BROWSER_REQUEST_TIMEOUT_MS) })
+    expect(signal?.aborted).toBe(true)
+    expect(screen.getByRole('button', { name: en.downloadFailed })).toHaveProperty('disabled', false)
+    await act(async () => { resolve(phase === 'headers' ? response : blob) })
+    expect(click).not.toHaveBeenCalled()
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(created)
+    fetchMock.mockImplementation(() => Promise.resolve(response))
+    fireEvent.click(screen.getByRole('button', { name: en.downloadFailed }))
+    await act(async () => {})
+    expect(click).toHaveBeenCalledOnce()
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(created + 1)
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:image')
+    expect(screen.getByRole('button', { name: en.downloadOriginal })).toHaveProperty('disabled', false)
+  })
+
+  it.each([
+    ['unmount', 'headers'], ['unmount', 'blob'], ['session', 'headers'],
+    ['session', 'blob'], ['asset', 'headers'], ['asset', 'blob'],
+  ] as const)('aborts on %s and never downloads late %s', async (replacement, phase) => {
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    let resolve!: (value: any) => void
+    let signal: AbortSignal | null | undefined
+    const body = vi.fn(() => new Promise<Blob>(done => { resolve = done }))
+    vi.stubGlobal('fetch', vi.fn((_path: string, init: RequestInit) => {
+      signal = init.signal
+      return phase === 'headers' ? new Promise<Response>(done => { resolve = done })
+        : Promise.resolve({ ok: true, blob: body })
+    }))
+    const view = render(<CodexImageToolView {...standard} t={t} sessions={sessions} block={originalBlock()} />)
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: en.downloadOriginal }))
+    await act(async () => {})
+    const created = vi.mocked(URL.createObjectURL).mock.calls.length
+    if (replacement === 'unmount') view.unmount()
+    else view.rerender(<CodexImageToolView {...standard} sessionId={replacement === 'session' ? 'session-2' as typeof standard.sessionId : standard.sessionId}
+      t={t} sessions={sessions} block={originalBlock(replacement === 'asset' ? { ...original, assetId: `img_${'c'.repeat(32)}` } : original)} />)
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { resolve(phase === 'headers' ? { ok: true, blob: body } : new Blob([new Uint8Array([1, 2, 3])])) })
+    if (phase === 'headers') expect(body).not.toHaveBeenCalled()
+    expect(click).not.toHaveBeenCalled()
+    // Session replacement can create its own preview, but not an original URL.
+    expect(vi.mocked(URL.createObjectURL).mock.calls.slice(created).every(([blob]) => blob instanceof Blob && blob.type === 'image/png')).toBe(true)
+    view.unmount()
+    expect(vi.mocked(URL.revokeObjectURL).mock.calls.length).toBe(vi.mocked(URL.createObjectURL).mock.calls.length)
+  })
+
+  it('rejects incomplete original bytes without creating a URL or clicking', async () => {
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:image'), revokeObjectURL: vi.fn() })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => new Blob([new Uint8Array([1, 2])]) })))
+    render(<CodexImageToolView {...standard} t={t} sessions={sessions} block={originalBlock()} />)
+    await act(async () => {})
+    const created = vi.mocked(URL.createObjectURL).mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: en.downloadOriginal }))
+    await screen.findByRole('button', { name: en.downloadFailed })
+    expect(click).not.toHaveBeenCalled()
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(created)
   })
 })

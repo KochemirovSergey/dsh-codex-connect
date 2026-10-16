@@ -35,6 +35,7 @@ import {
 } from './update.ts'
 import { CODEX_CONNECT_VERSION } from './version.ts'
 import { FastModeRegistry } from './fast-mode.ts'
+import { registerOpenAICodexFastModeDefaults } from './fast-mode-defaults.ts'
 import { assertNoOpenAICodexProviderConflict } from './doctor.ts'
 import { imageGenerateTool } from './image-tool.ts'
 import { viewImageTool } from './view-image.ts'
@@ -42,12 +43,15 @@ import { OpenAICodexTransport } from './transport.ts'
 import type { OpenAICodexTransportV1 } from './transport.ts'
 import { OpenAICodexProxyManager } from './provider-proxy.ts'
 import { OpenAICodexBackendRequests } from './backend-request.ts'
+import { RequestMetrics } from './request-metrics.ts'
 import { AdaptiveTaskControlRuntime } from './adaptive-task-control-runtime.ts'
+import { reserveAdaptiveTaskAttempt } from './adaptive-task-scope.ts'
 import { TaskDelegationArtifacts } from './adaptive-task-artifacts.ts'
 import { taskIdentity } from './adaptive-task-store.ts'
 import { registerAdaptiveTaskHttp } from './adaptive-task-http.ts'
 import { ADAPTIVE_TASK_MODELS } from './adaptive-task-contract.ts'
 import { OpenAICodexImageAssetStore } from './image-assets.ts'
+import { registerImageHandleBridge } from './image-handle-bridge.ts'
 import { registerOpenAICodexAutoReview } from './auto-review.ts'
 import { selectOpenAICodexSearchRoute } from './search-route-override.ts'
 import { ReserveRequestPermits, ReserveReturnStore } from './reserve-state.ts'
@@ -244,6 +248,10 @@ export const OPENAI_CODEX_SETTINGS_NS = OPENAI_CODEX_SETTINGS_NAMESPACE
 
 /** Plain configuration accepted by direct Cordis composition and unit tests. */
 export interface Config {
+  /** Opt-in absolute owner-only directory for local request evidence; never uploads telemetry. Restart to change. */
+  requestMetricsDirectory?: string | undefined
+  /** Per-process journal limit; reaching it stops recording with a warning, not model execution. */
+  requestMetricsMaxBytes?: number
   /** Complete interactive OAuth deadline in milliseconds; applies when the plugin loads. */
   oauthTimeoutMs?: number
   /** Model ids advertised in selectors; omitted to advertise the full catalog. */
@@ -264,12 +272,18 @@ export interface Config {
   enableSearch?: boolean
   /** Automatically follow server-authorized Luna Reserve transitions, never generic rate limits. */
   enableReserveFallback?: boolean
+  /** Enable Fast Mode for newly started top-level sessions only. */
+  enableNewSessionFastMode?: boolean
+  /** Independent opt-in default for newly started subagent sessions. */
+  enableNewSubagentFastMode?: boolean
   /** Explicit profile opt-in to Codex native context management; DSH owns automatic triggers. Disabling stops new native compactions, not replay of existing checkpoints. */
   enableNativeCompaction?: boolean
   /** Register the optional image-loading tool. */
   enableImageTool?: boolean
   /** Register the optional prompt-only image generation tool. */
   enableImageGeneration?: boolean
+  /** Restrict the image handle bridge to these tool names; omitted processes every tool. */
+  imageHandleBridgeTools?: string[] | undefined
   /** Optional profile-scoped image route model hint; empty uses the default route hint. */
   imageModelHint?: string
   /** Record that this profile accepted the Auto-review data disclosure. */
@@ -302,6 +316,8 @@ function parseSettingsContextWindowOverrides(
 }
 
 const configSchema = z.object({
+  requestMetricsDirectory: z.union([z.const(undefined), z.string()]),
+  requestMetricsMaxBytes: z.number().step(1).min(4096).max(64 * 1024 * 1024).default(16 * 1024 * 1024),
   oauthTimeoutMs: z.number().step(1).min(1_000).max(1_800_000).default(OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS),
   models: z.union([z.const(undefined), z.array(z.string())]).volatile(),
   enableProxy: z.boolean().default(false).volatile(),
@@ -312,9 +328,12 @@ const configSchema = z.object({
   ).volatile(),
   enableSearch: z.boolean().default(false).volatile(),
   enableReserveFallback: z.boolean().default(false).volatile(),
+  enableNewSessionFastMode: z.boolean().default(false).volatile(),
+  enableNewSubagentFastMode: z.boolean().default(false).volatile(),
   enableNativeCompaction: z.boolean().default(false).volatile(),
   enableImageTool: z.boolean().default(false).volatile(),
   enableImageGeneration: z.boolean().default(false).volatile(),
+  imageHandleBridgeTools: z.union([z.const(undefined), z.array(z.string())]).volatile(),
   imageModelHint: z.transform(z.string(), parseOpenAICodexImageModelHint).default('').volatile(),
   autoReviewDisclosureAcknowledged: z.boolean().default(false).volatile(),
   enableAutoReview: z.boolean().default(false).volatile(),
@@ -326,6 +345,8 @@ const configSchema = z.object({
 
 /** Runtime configuration exposes each editable field through Cordis's public Volatile type. */
 export interface VolatileConfig {
+  requestMetricsDirectory?: string | undefined
+  requestMetricsMaxBytes: number
   oauthTimeoutMs: number
   models: Volatile<string[] | undefined>
   enableProxy: Volatile<boolean>
@@ -333,9 +354,12 @@ export interface VolatileConfig {
   contextWindowOverrides: Volatile<Record<string, number | null> | null | undefined>
   enableSearch: Volatile<boolean>
   enableReserveFallback: Volatile<boolean>
+  enableNewSessionFastMode: Volatile<boolean>
+  enableNewSubagentFastMode: Volatile<boolean>
   enableNativeCompaction: Volatile<boolean>
   enableImageTool: Volatile<boolean>
   enableImageGeneration: Volatile<boolean>
+  imageHandleBridgeTools: Volatile<string[] | undefined>
   imageModelHint: Volatile<string>
   autoReviewDisclosureAcknowledged: Volatile<boolean>
   enableAutoReview: Volatile<boolean>
@@ -360,6 +384,8 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     models: configValue(config.models), enableProxy: configValue(config.enableProxy), proxyUrl: configValue(config.proxyUrl),
     contextWindowOverrides: configValue(config.contextWindowOverrides), enableSearch: configValue(config.enableSearch),
     enableReserveFallback: configValue(config.enableReserveFallback), enableNativeCompaction: configValue(config.enableNativeCompaction),
+    enableNewSessionFastMode: configValue(config.enableNewSessionFastMode),
+    enableNewSubagentFastMode: configValue(config.enableNewSubagentFastMode),
     enableImageTool: configValue(config.enableImageTool), enableImageGeneration: configValue(config.enableImageGeneration),
     imageModelHint: configValue(config.imageModelHint), autoReviewDisclosureAcknowledged: configValue(config.autoReviewDisclosureAcknowledged),
     enableAutoReview: configValue(config.enableAutoReview), searchModel: configValue(config.searchModel), searchMode: configValue(config.searchMode),
@@ -374,7 +400,11 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
   const resolveProviderProxyUrl = (): string | undefined => resolveOpenAICodexProxyUrl(resolveOpenAICodexSettings(current()))
   let taskRuntime: AdaptiveTaskControlRuntime | undefined
   const backendRequests = new OpenAICodexBackendRequests(proxyManager, resolveProviderProxyUrl, undefined,
-    async () => { await taskRuntime?.reserveAuxiliary() })
+    async () => { await taskRuntime?.reserveAuxiliary() },
+    config.requestMetricsDirectory === undefined ? undefined : new RequestMetrics(config.requestMetricsDirectory, config.requestMetricsMaxBytes),
+    reserveAdaptiveTaskAttempt)
+  // Also release the journal if a later registration fails before the full teardown is installed.
+  ctx.effect(() => () => backendRequests.dispose())
   let proxyWasActive = resolveProviderProxyUrl() !== undefined
   const credentials = new OpenAICodexCredentialStore()
   const imageAssets = new OpenAICodexImageAssetStore()
@@ -382,6 +412,7 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
     join(dirname(credentials.filename), OPENAI_CODEX_TRUSTED_ORIGINS_FILENAME),
   )
   const fastMode = new FastModeRegistry()
+  registerOpenAICodexFastModeDefaults(ctx, fastMode, () => resolveOpenAICodexSettings(current()))
   const taskDirectory = join(dirname(credentials.filename), 'codex-connect-tasks')
   taskRuntime = new AdaptiveTaskControlRuntime(ctx, {
     directory: taskDirectory,
@@ -438,14 +469,25 @@ export function apply(ctx: Context, config: Config | VolatileConfig): void {
       () => resolveOpenAICodexSettings(current()).enableNativeCompaction,
       backendRequests,
       taskRuntime,
+      () => resolveOpenAICodexSettings(current()).enableImageGeneration,
     ),
   )
+  registerImageHandleBridge(ctx, {
+    // The bridge rides on the image-generation gate: when GPT Image is on,
+    // every route gets selection handles, not just the openai-codex adapter.
+    enabled: () => configValue(config.enableImageGeneration) === true,
+    tools: () => configValue(config.imageHandleBridgeTools),
+  })
+  // Public catalog/version metadata does not need access to the operator's account or private resources.
   ctx.inject(['webServer'], webCtx => {
+    registerOpenAICodexUpdateRoutes(webCtx, { currentVersion: CODEX_CONNECT_VERSION }, trustedOrigins)
+    registerOpenAICodexModelCatalogRoute(webCtx, openAICodexModelCatalog, trustedOrigins)
+  })
+  // Protected routes follow Connection's lifetime as well as WebServer's; no unauthenticated fallback.
+  ctx.inject(['webServer', 'connection'], webCtx => {
     registerOpenAICodexAuthRoutes(webCtx, credentials, trustedOrigins, fastMode, proxyManager, resolveProviderProxyUrl,
       configValue(config.oauthTimeoutMs) ?? OPENAI_CODEX_AUTHORIZATION_TIMEOUT_MS, quota)
     registerOpenAICodexProxyRoutes(webCtx, trustedOrigins, proxyManager)
-    registerOpenAICodexUpdateRoutes(webCtx, { currentVersion: CODEX_CONNECT_VERSION }, trustedOrigins)
-    registerOpenAICodexModelCatalogRoute(webCtx, openAICodexModelCatalog, trustedOrigins)
     registerOpenAICodexOriginalImageRoute(webCtx, trustedOrigins, imageAssets)
   })
 

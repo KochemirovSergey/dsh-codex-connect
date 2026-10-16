@@ -15,6 +15,7 @@ import { cachedTaskRegistry } from './task-fixture-registry.mjs'
 import { readTaskHostIdentity } from './check-adaptive-task-matrix.mjs'
 import { assertDelegationMatrix, inspectDelegationMatrixReport } from './adaptive-task-delegation-matrix-contract.mjs'
 import { TASK_RUNTIME_PACKAGES } from './adaptive-task-matrix-contract.mjs'
+import { taskMatrixFailureSummary } from './task-matrix-failure-summary.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -52,8 +53,8 @@ async function main() {
       const metadata = exactDshFixtureManifest(overrides)
       // Keep peer-only roots explicit: npm's auto-peer resolver can otherwise
       // produce conflicting override sets once the authenticated UI peers enter.
-      const adapter = await registry('@deepseek-ai/dsh-llm-pi-ai', version)
-      metadata.dependencies['@earendil-works/pi-ai'] = adapter.dependencies['@earendil-works/pi-ai']
+      // Source fixtures must retain the plugin-owned provider version; the host adapter owns its nested dependency.
+      metadata.dependencies['@earendil-works/pi-ai'] = pkg.dependencies['@earendil-works/pi-ai']
       metadata.dependencies.undici = pkg.dependencies.undici; metadata.type = 'module'
       await writeFile(join(host, 'package.json'), JSON.stringify(metadata))
       const env = { ...scrubCanaryEnvironment(process.env), PATH: dirname(process.execPath) + delimiter + process.env.PATH, DSH_HOME: join(host, 'synthetic-home'),
@@ -83,7 +84,9 @@ async function main() {
         const failure = join(ROOT, 'node_modules/.cache/task-matrix/phase2-failures', version)
         await mkdir(failure, { recursive: true }); await writeFile(join(failure, 'tests.stderr'), test.stderr); await writeFile(join(failure, 'tests.stdout'), test.stdout)
         try { await copyFile(join(host, 'tests.json'), join(failure, 'tests.json')) } catch {}
-        throw new Error(`Task ${version} tests failed: ${test.error?.message ?? test.cleanupError?.message ?? test.stderr.slice(-4000)}`)
+        let failedReport
+        try { failedReport = JSON.parse(await readFile(join(host, 'tests.json'), 'utf8')) } catch {}
+        throw new Error(`Task ${version} tests failed: ${taskMatrixFailureSummary(test, failedReport)}`)
       }
       const result = JSON.parse(await readFile(join(host, 'tests.json'), 'utf8')); const cases = inspectDelegationMatrixReport(result)
       const actual = JSON.parse(await readFile(join(host, 'identity.json'), 'utf8'))

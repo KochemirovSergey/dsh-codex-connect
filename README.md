@@ -4,7 +4,7 @@
 
 English | [中文](docs/README.zh.md)
 
-Connect your ChatGPT subscription to DeepSeek Harness with OAuth, optional GPT Image generation, user-controlled defaults, Harness-native approvals, diagnostics, and reliable session recovery.
+Connect your ChatGPT subscription to DeepSeek Harness with OAuth, optional GPT Image generation and editing, user-controlled defaults, Harness-native approvals, diagnostics, and reliable session recovery.
 
 Community Alpha — not affiliated with or endorsed by OpenAI, ChatGPT, Codex, DeepSeek, or DeepSeek Harness.
 
@@ -16,19 +16,29 @@ This guide describes the published pairing below. Check `dsh --version` first an
 
 | Requirement | Verified pairing |
 |---|---|
-| Codex Connect | `0.1.0-alpha.4.46` |
-| DeepSeek Harness | `0.1.7-rc.1` |
+| Codex Connect | `0.2.0-alpha.3` |
+| DeepSeek Harness | `0.1.7-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2` or `0.2.1-alpha.1` (consistent package set) |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 | Account | ChatGPT OAuth with access to the requested Codex model; availability is decided by OpenAI |
 
-As of 2026-09-24, npm `alpha` points to 4.46 while `latest` remains on 4.45. Use the exact version below for this DSH pairing; publishing an Alpha and changing the default installation channel are separate actions.
+[`0.2.0-alpha.3`](docs/release-notes/0.2.0-alpha.3.md) adds official Desktop sign-in compatibility and Desktop-specific account diagnostics while preserving the Web flow. Desktop uses its own profile and bundled CLI; follow the [Desktop installation instructions](INSTALL.md#official-desktop). The declared host versions, defaults and account storage are unchanged.
 
-On stock DSH `0.1.7-rc.1`, ordinary Composer works, but Task controls remain paused: activation is rejected and fresh Sessions do not show them. Migration of earlier Task grants across a Harness upgrade is not verified. Older supported pairings and their task behavior are documented in [Installation and upgrades](INSTALL.md).
+[`0.2.0-alpha.2`](docs/release-notes/0.2.0-alpha.2.md) publishes exact DSH `0.2.1-alpha.1` compatibility and the cross-route image selection handle repair. The earlier `0.2.0-alpha.1` artifact remains unchanged and rejects that host. Existing supported hosts do not require an upgrade.
+
+As of 2026-10-10, npm `alpha` points to `0.2.0-alpha.3`, while `latest` remains `0.2.0-alpha.1`. Default installation still selects the earlier Alpha; the `latest` tag does not make it a stable release. Use the exact version below for these DSH pairings; a moving npm tag is not a compatibility guarantee for other hosts.
+
+[`0.2.0-alpha.1`](docs/release-notes/0.2.0-alpha.1.md) adds `gpt-6.1-sol` through a model-catalog fallback and begins the shorter independent plugin numbering. The four supported DSH versions are unchanged; no host upgrade is required.
+
+It retains Alpha 4.54's handling of initial system instructions and tool definitions on DSH 0.2.0-rc.2, diagnostics for differing host/plugin provider libraries, and Canary's normal-request checks, along with Alpha 4.53's core maintenance changes, existing-task recovery and safety, and 4.52's [opt-in local request metrics](docs/request-metrics.md). Collection stays off until a private directory is configured; unknown usage is not zero. No Task reopening or model-library/OAuth upgrade is included.
+
+The package passed keyless installation/runtime regression on all five exact DSH versions above. Task controls remain paused: activation is rejected and existing current-host browser regressions show no controls in fresh Sessions. These checks do not establish live OAuth, real-account image editing, authenticated browser acceptance on the new host, or full user acceptance; migration of earlier Task grants across a Harness upgrade is not verified. Older supported pairings and their task behavior are documented in [Installation and upgrades](INSTALL.md).
+
+Separately, the maintainer reported successful login and normal use on Desktop `0.2.0-rc.2` with the identified local adaptation build. The released client differs only by the package-version string; this is not new live-account acceptance of the public npm artifact. See the [Desktop acceptance record](INSTALL.md#official-desktop).
 
 ### 1. Install
 
 ```sh
-dsh plugin --profile web add dsh-codex-connect@0.1.0-alpha.4.46
+dsh plugin --profile web add dsh-codex-connect@0.2.0-alpha.3
 dsh web
 ```
 
@@ -57,7 +67,7 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 
 - **Accounts:** save up to 16 accounts on the DSH host and manually select the active account for subsequent requests. Account selection is not a per-session binding. Requests keep their captured account; the plugin does not rotate accounts or silently fail over.
 - **Models and Astra support:** the currently verified DSH and plugin combination supports `gpt-6-astra`. The plugin supplies its missing model definition with Low, Medium, High, Xhigh, and Max reasoning levels; Default preserves the provider default. Saved Off/Minimal selections require an [explicit update](MIGRATION.md#astra-reasoning-selections). When the installed dependency catalog includes Astra, the plugin preserves its native metadata while retaining these five calibrated reasoning choices. A model appearing in the list does not mean the current account has permission to use it; overall compatibility with new dependency versions still requires separate verification.
-- **Fast Mode:** request priority service for one conversation, off by default. Actual speed and quota consumption depend on the service; no fixed speed multiplier is guaranteed.
+- **Fast Mode:** request priority service for one conversation, off by default. Optional, separate profile settings can enable it for newly started top-level or subagent conversations without changing existing conversations. Actual speed and quota consumption depend on the service; no fixed speed multiplier is guaranteed.
 - **Quota:** show the server-returned `5h` and `7d` windows and reset times, normally refreshed every 60 seconds while signed in and the tab is visible; failures back off. Missing windows are not invented; Spark uses its separate quota bucket.
 - **Plugin updates:** check for newer Codex Connect releases without installing anything or recommending changes to DSH. Host compatibility is available through explicit local diagnostics.
 
@@ -66,6 +76,8 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 </p>
 
 ## Optional capabilities
+
+Development now follows the [core maintenance scope](docs/maintenance-scope.md): maintain connection, compatibility, diagnostics and recovery; freeze Task orchestration and unproven optimization work. Existing published options are not removed or remotely disabled by this decision.
 
 **Earlier Alpha 4.40/4.41 pairings:** task-level model control is off by default. After explicit task authorization, GPT-5.6 Sol/Medium starts the task, and the active model may continue, change effort, or hand off the main task within the granted scope. The task shares one request ledger and budget; stopping, manual takeover, and restart recovery retain the grant boundary. Phase 2 read-only delegation requires separate consent and does not grant workers write access. Stock DSH `0.1.7-rc.1` with Alpha 4.43 keeps these Task controls paused; do not infer they are available from an older pairing. See [Phase 1](docs/experiments/adaptive-task-phase1.md) and [Phase 2 consent](docs/experiments/adaptive-task-phase2-consent.md).
 
@@ -79,7 +91,7 @@ All options below are off on a fresh installation. Edit them in **Settings → P
 | Codex Search | `enableSearch` | Selects Codex for the entire profile's search route; disabling restores the previously active route. |
 | Luna Reserve | `enableReserveFallback` | Uses the hidden Reserve route only when the backend explicitly authorizes it for the captured account; never changes global defaults or retries a generic `429`. |
 | Image viewing | `enableImageTool` | Adds `view_image` to vision-capable models for local files and validated public HTTP(S) images. |
-| GPT Image generation | `enableImageGeneration` | Prompt-only generation; availability, dimensions, and quota remain account- and service-controlled. |
+| GPT Image generation and editing | `enableImageGeneration` | Generate from a prompt or edit selected conversation images with ordered references. Availability, dimensions, and quota remain account- and service-controlled. Also gates the cross-route image handle bridge, which persists the Codex Connect image selection handles into image tool results on non-Codex routes so image editing works there too; the `openai-codex` route is skipped because its adapter already injects the same handles per request. Optional `imageHandleBridgeTools` restricts the bridge to specific tools. |
 | Auto-review | `enableAutoReview` | Sends bounded approval context, tool arguments, working directory, and the planned action to `chatgpt.com`, with confirmation on first enablement. Failures return to human approval. |
 
 **Published experiment:** Alpha 4.35 includes Luna Reserve fallback, disabled by default. Real-account Reserve entry and recovery remain unverified; Alpha 4.34 does not include this feature.
@@ -87,6 +99,8 @@ All options below are off on a fresh installation. Edit them in **Settings → P
 With `enableReserveFallback: true`, the account UI and agent routing share one identity-bound quota state. Background refresh follows the returned quota windows while recently in use; fresh state is reused across agent steps. Ordinary quota reads also share the cache, even with Reserve disabled. The plugin enters `gpt-reserve` only with complete, non-FedRAMP account/user identity and backend Luna Reserve authorization, then restores the session's previous model and reasoning effort after confirmed ordinary-usage recovery. Reserve has its own allowance, is hidden from the model picker, and is not unlimited. The backend decides eligibility; reset times alone do not authorize a switch. This version supports known `gpt-5.6-luna` metadata only. See [Luna Reserve fallback](docs/reference.md#luna-reserve-fallback) for refresh, identity, and verification limits.
 
 Use the image generation capability included with your current GPT subscription. Successful images appear below the conversation answer without opening its processing details; the original tool card remains available there. Generated originals are stored separately from attachment previews; disabling the capability or uninstalling the plugin does not delete them. See [Configuration and recovery](docs/reference.md#search-and-image-tools) for storage and access rules.
+
+Alpha 4.49 fixes the re-uploaded-copy/original confusion and hidden safe failure reasons found in 4.48. Ambiguous inputs require an explicit selection rather than silently changing the target. The original package remains unchanged; Alpha 4.50 retains both repairs and adds exact DSH rc.2 compatibility while preserving rc.1. Do not mix rc.1 and rc.2 packages or bypass the plugin manager's version checks.
 
 Auto-review operates after Harness policy requires approval; it does not bypass that policy. See [Auto-review behavior](docs/auto-review.md) before enabling it.
 
@@ -128,6 +142,7 @@ A missing entry in [verified-compatibility.json](verified-compatibility.json) me
 
 - [Installation and upgrades](INSTALL.md)
 - [Configuration, diagnostics, and recovery](docs/reference.md)
+- [Local request metrics: enable, report, and disable](docs/request-metrics.md)
 - [Migration from `dsh-codex`](MIGRATION.md)
 - [Architecture and security details](docs/design.md)
 - [Auto-review behavior](docs/auto-review.md)
@@ -145,3 +160,5 @@ pnpm run check:dsh-install
 ## License and acknowledgements
 
 Copyright 2026 Frank Song for Codex Connect modifications and additional work. This project contains software derived from [Yan-Zero/dsh-codex](https://github.com/Yan-Zero/dsh-codex); Copyright 2026 Yan-Zero is retained for upstream material. Both are distributed under Apache-2.0; see [NOTICE](NOTICE).
+
+Published `0.2.0-alpha.1` adds `gpt-6.1-sol` to the manual model catalog and configuration selector. It exposes Low, Medium, High, Xhigh and Max; Default omits effort, and Ultra orchestration is unsupported. Codex catalog defaults remain 272,000 tokens with an optional 872,000 local ceiling, not the API product window or proof of account access. See [metadata and validation](docs/agent-notes/gpt61-sol-support.md). No Adaptive Task grants are expanded.

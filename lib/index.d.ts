@@ -1,5 +1,6 @@
 import z from "@deepseek-ai/schemastery";
 import { AuthInteraction, Credential, CredentialInfo, CredentialStore, OAuthCredential } from "@earendil-works/pi-ai";
+import { GenerateOptions, StreamChunk } from "@deepseek-ai/dsh-llm";
 import { Context, Service, Volatile } from "@deepseek-ai/cordis";
 import "@deepseek-ai/dsh-tools";
 import { WebSearchProvider, WebSearchRequest, WebSearchResult } from "@deepseek-ai/dsh-web";
@@ -141,6 +142,62 @@ export declare class OpenAICodexProxyManager {
 /** Probe the bounded automatic candidate set in parallel. */
 export declare function detectOpenAICodexProxies(manager: OpenAICodexProxyManager): Promise<readonly OpenAICodexProxyProbeResult[]>;
 //#endregion
+//#region src/request-metrics.d.ts
+interface RequestMetricUsage {
+  /** Responses input_tokens includes cached input; fields remain null when absent or invalid. */
+  input: number | null;
+  cachedInput: number | null;
+  cacheWrite: number | null;
+  output: number | null;
+  /** Subset of output, never added to output again. */
+  reasoningOutput: number | null;
+}
+type RequestMetricOutcome = 'completed' | 'incomplete' | 'provider-error' | 'http-error' | 'network-error' | 'cancelled' | 'unobserved';
+interface RequestMetricFinish {
+  schemaVersion: 1;
+  event: 'finish';
+  id: string;
+  at: number;
+  elapsedMs: number;
+  status: number | null;
+  outcome: RequestMetricOutcome;
+  usage: RequestMetricUsage;
+  observation: 'observed' | 'missing' | 'oversized' | 'malformed';
+}
+/** One process-local writer; exclusive owner-only file, bounded size, no shared journal mutation. */
+declare class RequestMetrics {
+  private readonly maxBytes;
+  private readonly warn;
+  private readonly scope;
+  private fd;
+  private bytes;
+  private disabled;
+  private readonly journalId;
+  readonly filename: string;
+  constructor(directory: string, maxBytes?: number, warn?: () => void);
+  private stop;
+  private write;
+  /** Release the local journal descriptor; in-flight writes after close are not claimed as recorded. */
+  close(): void;
+  /** Scope each actual adapter call, including compaction/title calls, without rewriting options. */
+  stream(stream: (options: GenerateOptions) => AsyncIterable<StreamChunk>, options: GenerateOptions): AsyncIterable<StreamChunk>;
+  /** Called after admission/reservation, immediately before a real fetch attempt. */
+  begin(lane: OpenAICodexBackendLane, id: string): MetricAttempt;
+}
+/** Records the whole response lifetime, including unread-body cancellation, exactly once. */
+declare class MetricAttempt {
+  private readonly id;
+  private readonly write;
+  private readonly start;
+  private ended;
+  private status;
+  private observer;
+  constructor(id: string, write: (event: RequestMetricFinish) => void);
+  headers(response: Response, expected?: 'sse'): void;
+  feed(value: Uint8Array): void;
+  finish(transport: 'eof' | 'cancelled' | 'network-error'): void;
+}
+//#endregion
 //#region src/backend-request-policy.d.ts
 type OpenAICodexBackendIdentity = 'plugin' | 'preserve' | 'probe';
 interface OpenAICodexBackendResponseMeta {
@@ -160,6 +217,8 @@ interface OpenAICodexBackendRunOptions {
 }
 interface OpenAICodexBackendFetchOptions {
   readonly lane: OpenAICodexBackendLane;
+  /** Known successful protocol when the upstream omits its media type; observation only. */
+  readonly responseFormat?: 'sse';
   readonly identity?: OpenAICodexBackendIdentity;
   readonly fetch?: BackendFetch;
   readonly onAttempt?: (meta: Pick<OpenAICodexBackendResponseMeta, 'clientRequestId'>) => void;
@@ -175,12 +234,17 @@ declare class OpenAICodexBackendRequests {
   private readonly resolveProxyUrl;
   private readonly maxConcurrent;
   private readonly beforeAuxiliaryAttempt?;
+  readonly metrics?: RequestMetrics | undefined;
+  /** Optional owner accounting, before auxiliary checks and every actual fetch. */
+  private readonly beforeAttempt?;
   private active;
   private readonly waiters;
   private readonly cooldowns;
   private readonly lifecycle;
   private disposed;
-  constructor(proxyManager?: OpenAICodexProxyManager | undefined, resolveProxyUrl?: () => string | undefined, maxConcurrent?: number, beforeAuxiliaryAttempt?: (() => Promise<void>) | undefined);
+  constructor(proxyManager?: OpenAICodexProxyManager | undefined, resolveProxyUrl?: () => string | undefined, maxConcurrent?: number, beforeAuxiliaryAttempt?: (() => Promise<void>) | undefined, metrics?: RequestMetrics | undefined,
+  /** Optional owner accounting, before auxiliary checks and every actual fetch. */
+  beforeAttempt?: (() => Promise<void>) | undefined);
   private combinedSignal;
   private drain;
   private release;
@@ -199,6 +263,22 @@ declare class OpenAICodexBackendRequests {
   }>(operation: () => T): T;
   /** Abort queued/in-flight managed requests and prevent new admission. */
   dispose(): void;
+}
+//#endregion
+//#region src/image-format.d.ts
+/** Pure encoded-image header validation for PNG, JPEG, and WebP. */
+type CodexImageMediaType = 'image/png' | 'image/jpeg' | 'image/webp';
+//#endregion
+//#region src/image-edit-request.d.ts
+/** Bytes must already have passed the caller's session/attachment authorization. */
+interface ImageEditInputBytes {
+  readonly data: Uint8Array;
+  readonly mediaType: CodexImageMediaType;
+}
+/** A host-only request. Model-visible attachment IDs are never provider file IDs. */
+interface ImageEditRequest {
+  readonly prompt: string;
+  readonly images: readonly ImageEditInputBytes[];
 }
 //#endregion
 //#region src/transport.d.ts
@@ -271,6 +351,8 @@ interface ImageGenerationResponse {
 interface OpenAICodexTransportV1 {
   readonly apiVersion: 1;
   generateImages(input: ImageGenerationRequest, context: ImageRequestContext): Promise<ImageGenerationResponse>;
+  /** Additive capability: an older v1 service may not support editing. Never fall back. */
+  editImages?(input: ImageEditRequest, context: ImageRequestContext): Promise<ImageGenerationResponse>;
 }
 /** Core-owned Cordis service for the optional image package. */
 export declare class OpenAICodexTransport extends Service implements OpenAICodexTransportV1 {
@@ -282,6 +364,8 @@ export declare class OpenAICodexTransport extends Service implements OpenAICodex
   readonly apiVersion: 1;
   constructor(ctx: Context, credentials: OpenAICodexCredentialStore, proxyManager?: OpenAICodexProxyManager | undefined, resolveProxyUrl?: () => string | undefined, resolveImageModelHint?: () => string, backendRequests?: OpenAICodexBackendRequests | undefined);
   generateImages(input: ImageGenerationRequest, context: ImageRequestContext): Promise<ImageGenerationResponse>;
+  editImages(input: ImageEditRequest, context: ImageRequestContext): Promise<ImageGenerationResponse>;
+  private requestImages;
   private generateImagesWithoutProxy;
 }
 //#endregion
@@ -297,11 +381,11 @@ export declare const IMAGE_GENERATE_TOOL_NAME = "codex_connect_image_generate";
 export declare const COMPATIBILITY_SCHEMA_VERSION: 1;
 export declare const SUPPORTED_NODE_RANGE = "^22.19.0 || >=24.0.0";
 export declare const SUPPORTED_DSH_PLUGIN_API_VERSION = "0.1.7-rc.1";
-export declare const SUPPORTED_DSH_PLUGIN_API_VERSIONS: readonly ["0.1.7-rc.1"];
+export declare const SUPPORTED_DSH_PLUGIN_API_VERSIONS: readonly ["0.1.7-rc.1", "0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2", "0.2.1-alpha.1", "0.2.1-alpha.2", "0.2.1-alpha.3"];
 export declare const SUPPORTED_DSH_PLUGIN_API_RANGE: string;
 export declare const SUPPORTED_PI_AI_RANGE = "0.85.1";
 export declare const PI_AI_PACKAGE = "@earendil-works/pi-ai";
-export declare const DSH_PLUGIN_API_PACKAGES: readonly ["@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-atomic-write", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-compaction", "@deepseek-ai/dsh-home-paths", "@deepseek-ai/dsh-host-webserver", "@deepseek-ai/dsh-invariants", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-llm-pi-ai", "@deepseek-ai/dsh-fs", "@deepseek-ai/dsh-session", "@deepseek-ai/dsh-settings", "@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-util-values", "@deepseek-ai/dsh-web"];
+export declare const DSH_PLUGIN_API_PACKAGES: readonly ["@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-atomic-write", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-client-ui-chat", "@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-primitives", "@deepseek-ai/dsh-client-ui-tool", "@deepseek-ai/dsh-compaction", "@deepseek-ai/dsh-home-paths", "@deepseek-ai/dsh-host-webserver", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-llm-pi-ai", "@deepseek-ai/dsh-fs", "@deepseek-ai/dsh-session", "@deepseek-ai/dsh-settings", "@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-util-values", "@deepseek-ai/dsh-web"];
 export declare const COMPATIBILITY_PACKAGES: readonly ["@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-llm-pi-ai", "@deepseek-ai/dsh-compaction", "@earendil-works/pi-ai"];
 type CompatibilityPackageName = (typeof COMPATIBILITY_PACKAGES)[number];
 /** Version metadata proves a declared match, not behavioral failure for an untested package. */
@@ -346,8 +430,8 @@ export declare const COMPATIBILITY_CONTRACT: {
   };
   readonly dshPluginApi: {
     readonly version: "0.1.7-rc.1";
-    readonly versions: readonly ["0.1.7-rc.1"];
-    readonly packages: readonly ["@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-atomic-write", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-compaction", "@deepseek-ai/dsh-home-paths", "@deepseek-ai/dsh-host-webserver", "@deepseek-ai/dsh-invariants", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-llm-pi-ai", "@deepseek-ai/dsh-fs", "@deepseek-ai/dsh-session", "@deepseek-ai/dsh-settings", "@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-util-values", "@deepseek-ai/dsh-web"];
+    readonly versions: readonly ["0.1.7-rc.1", "0.1.7-rc.2", "0.2.0-rc.1", "0.2.0-rc.2", "0.2.1-alpha.1", "0.2.1-alpha.2", "0.2.1-alpha.3"];
+    readonly packages: readonly ["@deepseek-ai/dsh-agent", "@deepseek-ai/dsh-atomic-write", "@deepseek-ai/dsh-attachment", "@deepseek-ai/dsh-client-ui-chat", "@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-ui-primitives", "@deepseek-ai/dsh-client-ui-tool", "@deepseek-ai/dsh-compaction", "@deepseek-ai/dsh-home-paths", "@deepseek-ai/dsh-host-webserver", "@deepseek-ai/dsh-llm", "@deepseek-ai/dsh-llm-pi-ai", "@deepseek-ai/dsh-fs", "@deepseek-ai/dsh-session", "@deepseek-ai/dsh-settings", "@deepseek-ai/dsh-tools", "@deepseek-ai/dsh-util-values", "@deepseek-ai/dsh-web"];
   };
   readonly piAi: {
     readonly package: "@earendil-works/pi-ai";
@@ -519,6 +603,10 @@ interface OpenAICodexSettingsConfig {
   enableSearch: boolean;
   /** Follow explicit server-authorized Luna Reserve transitions for agent requests. */
   enableReserveFallback: boolean;
+  /** Default Fast Mode for newly started top-level sessions; existing sessions are unchanged. */
+  enableNewSessionFastMode: boolean;
+  /** Independent default for newly started subagent sessions. */
+  enableNewSubagentFastMode: boolean;
   /** Use provider-native Responses V2 compaction when DSH requests compaction. */
   enableNativeCompaction: boolean;
   enableImageTool: boolean;
@@ -805,6 +893,10 @@ export declare const inject: string[];
 export declare const OPENAI_CODEX_SETTINGS_NS = "llm-openai-codex";
 /** Plain configuration accepted by direct Cordis composition and unit tests. */
 export interface Config {
+  /** Opt-in absolute owner-only directory for local request evidence; never uploads telemetry. Restart to change. */
+  requestMetricsDirectory?: string | undefined;
+  /** Per-process journal limit; reaching it stops recording with a warning, not model execution. */
+  requestMetricsMaxBytes?: number;
   /** Complete interactive OAuth deadline in milliseconds; applies when the plugin loads. */
   oauthTimeoutMs?: number;
   /** Model ids advertised in selectors; omitted to advertise the full catalog. */
@@ -825,12 +917,18 @@ export interface Config {
   enableSearch?: boolean;
   /** Automatically follow server-authorized Luna Reserve transitions, never generic rate limits. */
   enableReserveFallback?: boolean;
+  /** Enable Fast Mode for newly started top-level sessions only. */
+  enableNewSessionFastMode?: boolean;
+  /** Independent opt-in default for newly started subagent sessions. */
+  enableNewSubagentFastMode?: boolean;
   /** Explicit profile opt-in to Codex native context management; DSH owns automatic triggers. Disabling stops new native compactions, not replay of existing checkpoints. */
   enableNativeCompaction?: boolean;
   /** Register the optional image-loading tool. */
   enableImageTool?: boolean;
   /** Register the optional prompt-only image generation tool. */
   enableImageGeneration?: boolean;
+  /** Restrict the image handle bridge to these tool names; omitted processes every tool. */
+  imageHandleBridgeTools?: string[] | undefined;
   /** Optional profile-scoped image route model hint; empty uses the default route hint. */
   imageModelHint?: string;
   /** Record that this profile accepted the Auto-review data disclosure. */
@@ -848,6 +946,8 @@ export interface Config {
 }
 /** Runtime configuration exposes each editable field through Cordis's public Volatile type. */
 export interface VolatileConfig {
+  requestMetricsDirectory?: string | undefined;
+  requestMetricsMaxBytes: number;
   oauthTimeoutMs: number;
   models: Volatile<string[] | undefined>;
   enableProxy: Volatile<boolean>;
@@ -855,9 +955,12 @@ export interface VolatileConfig {
   contextWindowOverrides: Volatile<Record<string, number | null> | null | undefined>;
   enableSearch: Volatile<boolean>;
   enableReserveFallback: Volatile<boolean>;
+  enableNewSessionFastMode: Volatile<boolean>;
+  enableNewSubagentFastMode: Volatile<boolean>;
   enableNativeCompaction: Volatile<boolean>;
   enableImageTool: Volatile<boolean>;
   enableImageGeneration: Volatile<boolean>;
+  imageHandleBridgeTools: Volatile<string[] | undefined>;
   imageModelHint: Volatile<string>;
   autoReviewDisclosureAcknowledged: Volatile<boolean>;
   enableAutoReview: Volatile<boolean>;

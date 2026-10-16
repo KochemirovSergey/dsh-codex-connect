@@ -18,7 +18,11 @@ describe('installation version guidance', () => {
     ['0.1.5-alpha.1', '0.1.0-alpha.4.41'],
     ['0.1.5-rc.1', '0.1.0-alpha.4.41'],
     ['0.1.5-rc.2', '0.1.0-alpha.4.41'],
-    ['0.1.7-rc.1', '0.1.0-alpha.4.46'],
+    ['0.1.7-rc.1', '0.2.0-alpha.3'],
+    ['0.1.7-rc.2', '0.2.0-alpha.3'],
+    ['0.2.0-rc.1', '0.2.0-alpha.3'],
+    ['0.2.0-rc.2', '0.2.0-alpha.3'],
+    ['0.2.1-alpha.1', '0.2.0-alpha.3'],
   ])('selects the recorded DSH %s / Codex Connect %s pair before installation', (dsh, plugin) => {
     expect(firstInstall).toBeGreaterThan(0)
     expect(compatibility.pluginVersions).toContainEqual(expect.objectContaining({
@@ -31,14 +35,19 @@ describe('installation version guidance', () => {
     expect(shellBlocks).toContain(`dsh plugin --profile web add dsh-codex-connect@${plugin}`)
   })
 
-  it('separates published Reserve availability from default-channel promotion and live acceptance', async () => {
+  it('reports the published pairing and default channel without claiming live acceptance', async () => {
     const [english, chinese] = await Promise.all([
       readFile(new URL('../README.md', import.meta.url), 'utf8'),
       readFile(new URL('../docs/README.zh.md', import.meta.url), 'utf8'),
     ])
     for (const guide of [english, chinese]) {
-      expect(guide).toContain('dsh plugin --profile web add dsh-codex-connect@0.1.0-alpha.4.46')
+      expect(guide).toContain('dsh plugin --profile web add dsh-codex-connect@0.2.0-alpha.3')
       expect(guide).toContain('`latest`')
+      expect(guide).toContain('`0.1.7-rc.1`')
+      expect(guide).toContain('`0.1.7-rc.2`')
+      expect(guide).toContain('`0.2.0-rc.1`')
+      expect(guide).toContain('`0.2.0-rc.2`')
+      expect(guide).toContain('`0.2.1-alpha.1`')
     }
     expect(english).toContain('**Published experiment:**')
     expect(english).toContain('disabled by default')
@@ -46,7 +55,9 @@ describe('installation version guidance', () => {
     expect(chinese).toContain('**已发布的实验功能：**')
     expect(chinese).toContain('仍默认关闭')
     expect(chinese).toContain('仍未验证')
-    expect(install).toContain('`alpha` points to `0.1.0-alpha.4.46` while `latest` remains on `0.1.0-alpha.4.45`')
+    expect(install).toContain('npm `alpha` points to `0.2.0-alpha.3`; `latest` remains `0.2.0-alpha.1`')
+    expect(english).toContain('`alpha` points to `0.2.0-alpha.3`, while `latest` remains `0.2.0-alpha.1`')
+    expect(chinese).toContain('`alpha` 指向 `0.2.0-alpha.3`，`latest` 仍为 `0.2.0-alpha.1`')
     expect(install).toContain('Stock rc.1 keeps Task controls paused')
     expect(install).toContain('enableReserveFallback: false')
   })
@@ -59,11 +70,22 @@ describe('installation version guidance', () => {
     expect(shellBlocks).not.toContain('dsh plugin --profile web add dsh-codex-connect@alpha')
   })
 
+  it('uses the bundled CLI and separate profile for the published Desktop installation', () => {
+    expect(shellBlocks).toContain('"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" --version')
+    expect(shellBlocks).toContain('"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add dsh-codex-connect@0.2.0-alpha.3')
+    expect(install).toContain('fully quit it before CLI package operations')
+    expect(install).toContain('Use the intended `DSH_HOME`')
+    expect(install).toContain('Preserve profile patches, default models, optional capabilities and OAuth state')
+    expect(install).toContain('Reopen Desktop after installing')
+    expect(install).not.toContain('trust-origin dsh-app://app')
+  })
+
   it('retains exact GitHub fallbacks for the latest releases when npm is unavailable', () => {
     expect(install).toMatch(/npm is unavailable[^\n]*github:franksong2702\/dsh-codex-connect#v0\.1\.0-alpha\.4\.21/iu)
     expect(install).toMatch(/npm is unavailable[^\n]*github:franksong2702\/dsh-codex-connect#v0\.1\.0-alpha\.4\.23/iu)
     expect(install).toMatch(/npm is unavailable[^\n]*github:franksong2702\/dsh-codex-connect#v0\.1\.0-alpha\.4\.25/iu)
     expect(install).toMatch(/npm is unavailable[^\n]*github:franksong2702\/dsh-codex-connect#v0\.1\.0-alpha\.4\.41/iu)
     expect(install).toMatch(/npm is unavailable[^\n]*github:franksong2702\/dsh-codex-connect#v0\.1\.0-alpha\.4\.46/iu)
+    expect(install).toMatch(/npm is unavailable[^\n]*github:franksong2702\/dsh-codex-connect#v0\.2\.0-alpha\.3/iu)
   })
 })

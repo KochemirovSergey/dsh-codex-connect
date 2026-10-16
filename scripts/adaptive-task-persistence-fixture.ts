@@ -1,5 +1,6 @@
 /** Fresh-process phase runner. Every account, instruction and response is synthetic. */
 import assert from 'node:assert/strict'
+import { reserveAdaptiveTaskAttempt, withAdaptiveTaskProvider } from '../src/adaptive-task-scope.ts'
 import { join } from 'node:path'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -12,7 +13,8 @@ import Agents from '@deepseek-ai/dsh-agent'
 import Loop from '@deepseek-ai/dsh-agent-loop'
 import Prompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
-import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { selectPersistencePlugin } from './persistence-plugin-fixture.mjs'
 import { createOpenAICodexAdapter } from '../src/adapter.ts'
 import { OpenAICodexCredentialStore } from '../src/store.ts'
 import { OpenAICodexBackendRequests } from '../src/backend-request.ts'
@@ -46,13 +48,13 @@ const ctx = new Context()
 try {
   for (const module of [Llm, Sessions, Projection, Agents, Prompt, Tools]) await ctx.plugin(module)
   await ctx.plugin(Loop, { agents: [] })
-  await ctx.plugin(Persistence, { root: join(directory, 'sessions'), compression: compression as 'none' | 'zstd', packChunks: true })
+  await ctx.plugin(selectPersistencePlugin(Persistence), { root: join(directory, 'sessions'), compression: compression as 'none' | 'zstd', packChunks: true })
   const credentials = new OpenAICodexCredentialStore()
   const claim = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-persistence' } })).toString('base64url')
   await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: `e30.${claim}.fixture`, refresh: 'fixture', accountId: 'synthetic-persistence', expires: Date.now() + 3600000 }))
   let runtime!: AdaptiveTaskRuntime
-  const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, async () => runtime.reserveAuxiliary())
-  const dispatch = { stream: (...args: Parameters<AdaptiveTaskRuntime['stream']>) => runtime.stream(...args) }
+  const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, async () => runtime.reserveAuxiliary(), undefined, reserveAdaptiveTaskAttempt)
+  const dispatch = { wrapProvider: withAdaptiveTaskProvider, stream: (...args: Parameters<AdaptiveTaskRuntime['stream']>) => runtime.stream(...args) }
   const adapter = createOpenAICodexAdapter(credentials, () => undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, governor, dispatch)
   ctx.llm.registerAdapter(['openai-codex'], adapter)
   const catalog = await Promise.all(ADAPTIVE_TASK_MODELS.map(id => adapter.resolveModel('openai-codex', id)))

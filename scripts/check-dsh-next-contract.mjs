@@ -27,6 +27,7 @@ import {
 } from './check-dsh-install.mjs'
 import { validateRuntimeProjection } from './check-installed-runtime.mjs'
 import './canary-multiversion.test.mjs'
+import './canary-maintenance.test.mjs'
 
 const failures = []
 let assertionCount = 0
@@ -226,13 +227,13 @@ const candidateDoctor = {
     status: 'unverified',
     node: { status: 'compatible' },
     packages: Object.fromEntries(['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@deepseek-ai/dsh-compaction', '@earendil-works/pi-ai'].map(name => [name, {
-      supported: name === '@earendil-works/pi-ai' ? '0.85.1' : '0.1.7-rc.1',
-      installed: name === '@earendil-works/pi-ai' ? '0.85.1' : '0.1.7-rc.2',
+      supported: name === '@earendil-works/pi-ai' ? '0.85.1' : '0.1.7-rc.1 || 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-alpha.1 || 0.2.1-alpha.2 || 0.2.1-alpha.3',
+      installed: name === '@earendil-works/pi-ai' ? '0.85.1' : '0.1.7-rc.3',
       status: 'unverified',
     }])),
   },
 }
-const candidateDoctorOptions = { allowUndeclaredCanaryVersion: true, dshVersion: '0.1.7-rc.2' }
+const candidateDoctorOptions = { allowUndeclaredCanaryVersion: true, dshVersion: '0.1.7-rc.3' }
 function doctorOutcome(report, options = candidateDoctorOptions, status = 1, stderr = '') {
   try {
     validateDoctorResult({ status, stdout: JSON.stringify(report), stderr }, '/fixture-home', '/fixture-repo', options)
@@ -406,7 +407,7 @@ const supersededFixture = await runSupersededCandidateFixture()
 assertContract(
   'issue 86 regression: an older channel is skipped before the isolated checker runs',
   supersededFixture.status === 0
-    && supersededFixture.report.status === 'pass'
+    && supersededFixture.report.status === 'skipped'
     && supersededFixture.report.classification === 'not-newer'
     && supersededFixture.report.stage === 'compare-candidate',
 )

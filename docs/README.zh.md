@@ -1,10 +1,12 @@
 # Codex Connect
 
+当前开发遵循[核心维护范围](maintenance-scope.md)：保留接入、兼容、诊断与恢复，冻结 Task 自动编排及未证明收益的优化。此决定不会删除已发布选项，也不会远程停用已有安装。
+
 [![npm version](https://img.shields.io/npm/v/dsh-codex-connect/alpha?label=npm%20alpha&color=cb3837)](https://www.npmjs.com/package/dsh-codex-connect)
 
 [English](../README.md) | 中文
 
-通过 OAuth 把你的 ChatGPT 订阅接入 DeepSeek Harness，并提供可选的 GPT Image 图片生成、由用户控制的默认设置、Harness 原生审批、诊断与可靠的会话恢复。
+通过 OAuth 把你的 ChatGPT 订阅接入 DeepSeek Harness，并提供可选的 GPT Image 图片生成与编辑、由用户控制的默认设置、Harness 原生审批、诊断与可靠的会话恢复。
 
 社区 Alpha 项目——与 OpenAI、ChatGPT、Codex、DeepSeek 或 DeepSeek Harness 不存在隶属关系，也未获得其背书。
 
@@ -16,19 +18,29 @@ Codex Connect 为标准 Harness agent loop 添加 `openai-codex` 模型提供方
 
 | 要求 | 已验证组合 |
 |---|---|
-| Codex Connect | `0.1.0-alpha.4.46` |
-| DeepSeek Harness | `0.1.7-rc.1` |
+| Codex Connect | `0.2.0-alpha.3` |
+| DeepSeek Harness | `0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.1`、`0.2.0-rc.2` 或 `0.2.1-alpha.1`（包版本必须一致） |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 | 账户 | 通过 ChatGPT OAuth 使用所请求的 Codex 模型；可用性由 OpenAI 决定 |
 
-截至 2026-09-24，npm `alpha` 指向 4.46，`latest` 仍指向 4.45。安装此 DSH 组合请使用下方精确版本命令；发布 Alpha 与提升默认安装渠道是两项独立操作。
+[`0.2.0-alpha.3`](release-notes/0.2.0-alpha.3.md) 增加官方 Desktop 登录适配和桌面版专用账户诊断，保留 Web 登录行为。Desktop 使用独立的 profile 和自带 CLI，请遵循[Desktop 安装说明](../INSTALL.md#official-desktop)。声明的宿主版本、默认设置和账户存储不变。
 
-在原版 DSH `0.1.7-rc.1` 上，普通 Composer 可用，但 Task 控件仍暂停：激活请求会被拒绝，新 Session 不显示这些控件。跨 Harness 升级迁移旧任务授权尚未验证。较旧组合及其任务行为见[安装与升级](../INSTALL.md)。
+[`0.2.0-alpha.2`](release-notes/0.2.0-alpha.2.md) 已发布精确 DSH `0.2.1-alpha.1` 的兼容适配，以及跨模型路由的图片选择句柄修复。较早的 `0.2.0-alpha.1` 安装包保持不变，仍拒绝该宿主。原有受支持宿主无需升级。
+
+截至 2026-10-10，npm `alpha` 指向 `0.2.0-alpha.3`，`latest` 仍为 `0.2.0-alpha.1`。默认安装仍选择较早的 Alpha；`latest` 标签不代表稳定版。安装这些 DSH 组合请使用下方精确版本命令；会移动的 npm tag 不保证其他宿主版本的兼容性。
+
+[`0.2.0-alpha.1`](release-notes/0.2.0-alpha.1.md) 通过模型目录补充增加 `gpt-6.1-sol`，并开始较短的独立插件编号。四个受支持的 DSH 版本不变，无需升级宿主。
+
+它保留 Alpha 4.54 的改动，在 DSH 0.2.0-rc.2 调用固定版本的 Codex 提供方时保留初始系统指令和工具定义，修正宿主与插件使用不同提供方库版本时的诊断，并补强 Canary 的普通请求检查。继续保留 Alpha 4.53 的核心维护改动、已有任务恢复与安全检查，以及 4.52 的[可选本地请求计量](request-metrics.zh.md)。配置私有目录后才采集；未知用量不当作零。不恢复 Task，也不升级模型库或 OAuth。
+
+该安装包已通过上方五个精确 DSH 版本的无凭据安装及运行回归验证。Task 控件仍暂停：激活请求会被拒绝，现有宿主的浏览器回归中，新 Session 不显示这些控件。这些检查不代表真实 OAuth、真实账户图片编辑、新宿主的已登录浏览器验收或完整用户验收；跨 Harness 升级迁移旧任务授权尚未验证。较旧组合及其任务行为见[安装与升级](../INSTALL.md)。
+
+另有维护者报告：已在 Desktop `0.2.0-rc.2` 用已记录的本地适配包完成登录并正常使用。发布客户端与该客户端仅版本字符串不同；这不代表公开 npm 包的重新登录验收。参见[Desktop 验收记录](../INSTALL.md#official-desktop)。
 
 ### 1. 安装
 
 ```sh
-dsh plugin --profile web add dsh-codex-connect@0.1.0-alpha.4.46
+dsh plugin --profile web add dsh-codex-connect@0.2.0-alpha.3
 dsh web
 ```
 
@@ -57,7 +69,7 @@ dsh plugin --profile web exec dsh-codex-connect doctor --json
 
 - **账户：**在 DSH 主机上保存最多 16 个账户，手动选择后续请求使用的活动账户，不按会话绑定。请求保持已固定的账户，插件不会自动轮换或静默故障切换。
 - **模型与 Astra 支持：**当前已验证的 DSH 与插件组合已支持 `gpt-6-astra`。插件补充缺失的模型定义，提供 Low、Medium、High、Xhigh 和 Max 五档推理强度；Default 保持提供方默认值。已保存的 Off/Minimal 选择需要[明确更新](../MIGRATION.md#astra-reasoning-selections)。安装的依赖目录包含 Astra 时，插件保留其原生元数据，同时维持这五档已校准的推理选择。模型出现在列表中，不代表当前账户具有调用权限；新依赖版本的整体兼容性仍需单独验证。
-- **Fast Mode：**为单个对话请求优先服务，默认关闭。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
+- **Fast Mode：**为单个对话请求优先服务，默认关闭。可分别为新建主对话和新建子代理对话启用默认值，不改变已有对话。实际速度和额度消耗取决于服务端，不保证固定提速倍数。
 - **额度：**显示服务端返回的 `5h`、`7d` 窗口及重置时间，已登录且标签页可见时通常每 60 秒刷新一次；失败后延长重试间隔。不虚构缺失窗口；Spark 使用独立额度桶。
 - **插件更新：**检查 Codex Connect 新版本，不自动安装，也不建议更改 DSH。宿主兼容性信息通过主动运行的本地诊断查看。
 
@@ -79,7 +91,7 @@ Alpha 4.40 还会在旧提供方目录缺失时补充 `gpt-6-sol` 和 `gpt-6-lun
 | Codex 搜索 | `enableSearch` | 将整个 profile 的搜索路由切换为 Codex；关闭后恢复之前的路由。 |
 | Luna Reserve | `enableReserveFallback` | 只在服务端为当前已固定账户明确授权时使用隐藏的 Reserve 路由；不修改全局默认模型，也不因普通 `429` 重试。 |
 | 图片查看 | `enableImageTool` | 为视觉模型添加 `view_image`，读取本地文件和经过校验的公网 HTTP(S) 图片。 |
-| GPT Image 图片生成 | `enableImageGeneration` | 只接受提示词；可用性、尺寸和额度仍由账户及服务端控制。 |
+| GPT Image 图片生成与编辑 | `enableImageGeneration` | 根据提示词生图，或编辑明确选定的会话图片并使用有顺序的参考图；可用性、尺寸和额度仍由账户及服务端控制。同时作为跨路由图片句柄桥接的开关：在非 Codex 路由上把 Codex Connect 图片选择句柄持久化到图片工具结果中，使图片编辑在这些路由上同样可用；`openai-codex` 路由会跳过，因为其适配器已在每次请求时注入相同句柄。可选 `imageHandleBridgeTools` 可将桥接限定到指定工具。 |
 | 自动审查 | `enableAutoReview` | 将有界的审批上下文、工具参数、工作目录和待执行动作发送到 `chatgpt.com`，首次启用需要确认。失败时交还人工审批。 |
 
 **已发布的实验功能：** Alpha 4.35 包含 Luna Reserve 回退，仍默认关闭。真实账户进入 Reserve 及恢复普通模型的过程仍未验证；Alpha 4.34 不包含该功能。
@@ -87,6 +99,8 @@ Alpha 4.40 还会在旧提供方目录缺失时补充 `gpt-6-sol` 和 `gpt-6-lun
 启用 `enableReserveFallback: true` 后，账户 UI 和 agent 路由共用一份绑定身份的额度状态，最近有使用需求时按服务端返回的额度窗口后台刷新；有效状态可跨 agent step 复用。普通额度读取也共用缓存，即使 Reserve 已关闭。只有身份完整、非 FedRAMP 且服务端授权时，插件才进入 `gpt-reserve`；普通额度确认恢复后，切回该会话先前的模型和推理强度。Reserve 有自己的额度，不出现在模型选择器中，也不是无限额度。资格由服务端决定，重置时间本身不授权切换。当前版本只支持已知的 `gpt-5.6-luna` 元数据。刷新、身份和验证限制见 [Luna Reserve 回退](reference.zh.md#luna-reserve-回退)。
 
 使用你当前 GPT 订阅计划提供的图片生成能力。成功生成的图片会显示在对话回复下方，无需展开处理过程；原工具卡片仍保留在处理过程里。生成原文件与附件预览分开保存；关闭能力或卸载插件不会删除这些文件。存储和访问规则见[配置与恢复](reference.zh.md#搜索与图片工具)。
+
+Alpha 4.49 修复了 4.48 中重新上传的副本与历史原图混淆、以及安全失败原因未显示的问题。输入有歧义时要求明确选择，不会静默更换编辑对象。旧安装包保持不变；Alpha 4.50 保留这两项修复，并在继续支持 rc.1 的同时增加精确的 DSH rc.2 兼容。不要混装 rc.1／rc.2 的包，也不要绕过插件管理器的版本检查。
 
 自动审查在 Harness 策略判定需要审批后执行，不会绕过该策略。启用前请阅读[自动审查行为](auto-review.zh.md)。
 
@@ -128,6 +142,7 @@ OAuth 凭据保存在运行 DSH 的主机上，由该主机用于向 OpenAI 认�
 
 - [安装与升级](../INSTALL.md)
 - [配置、诊断与恢复](reference.zh.md)
+- [本地请求计量：启用、报告与停用](request-metrics.zh.md)
 - [从 `dsh-codex` 迁移](../MIGRATION.md)
 - [架构与安全细节](design.zh.md)
 - [自动审查行为](auto-review.zh.md)
@@ -145,3 +160,5 @@ pnpm run check:dsh-install
 ## 许可证与致谢
 
 Codex Connect 的修改与新增工作 Copyright 2026 Frank Song。本项目包含派生自 [Yan-Zero/dsh-codex](https://github.com/Yan-Zero/dsh-codex) 的软件；上游内容继续保留 Copyright 2026 Yan-Zero。两部分均按 Apache-2.0 发布，详情见 [NOTICE](../NOTICE)。
+
+已发布的 `0.2.0-alpha.1` 将 `gpt-6.1-sol` 加入手动模型目录与配置选择器，支持 Low、Medium、High、Xhigh、Max；Default 不显式发送推理强度，不支持 Ultra 编排。Codex 目录默认上下文保持 272,000，允许的本地配置上限为 872,000；这不是 API 产品窗口，也不能证明账户访问权限。详见[元数据与验证](agent-notes/gpt61-sol-support.md)。不会扩大 Adaptive Task 授权。

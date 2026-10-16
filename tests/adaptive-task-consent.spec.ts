@@ -1,5 +1,6 @@
 /** Explicit composition, real host/persistence/adapter/governor/authentication; no real provider. */
 import { randomUUID } from 'node:crypto'
+import { reserveAdaptiveTaskAttempt } from '../src/adaptive-task-scope.ts'
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -13,7 +14,8 @@ import Sessions, { SessionId } from '@deepseek-ai/dsh-session'
 import Projection from '@deepseek-ai/dsh-session-projection'
 import Prompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
-import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { selectPersistencePlugin } from '../scripts/persistence-plugin-fixture.mjs'
 import { WebServer } from '@deepseek-ai/dsh-host-webserver'
 import * as Connection from '@deepseek-ai/dsh-client-connection'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -91,7 +93,7 @@ async function setup(selectedChild = child, catalogModels = [main, selectedChild
   const ctx = new Context(); contexts.push(ctx)
   for (const plugin of [Llm, Sessions, Projection, AgentRegistry, Prompt, Tools]) await ctx.plugin(plugin)
   await ctx.plugin(Loop, { agents: [] })
-  await ctx.plugin(Persistence, { root: join(root, 'sessions'), compression: 'none' })
+  await ctx.plugin(selectPersistencePlugin(Persistence), { root: join(root, 'sessions'), compression: 'none' })
   const credentials = new OpenAICodexCredentialStore(join(root, 'synthetic-auth.json'))
   const claim = Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'synthetic-consent' } })).toString('base64url')
   await credentials.modify('openai-codex', async () => ({ type: 'oauth', access: `e30.${claim}.fixture`, refresh: 'fixture', accountId: 'synthetic-consent', expires: Date.now() + 3600000 }))
@@ -103,7 +105,7 @@ async function setup(selectedChild = child, catalogModels = [main, selectedChild
     runtime = new AdaptiveTaskControlRuntime(pluginCtx, { directory: join(root, 'tasks'), artifacts: () => artifacts,
       models: async () => Promise.all(catalogModels.map(model => pluginCtx.llm.resolveModelInfo('openai-codex', model))) })
   } })
-  const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, () => runtime.reserveAuxiliary())
+  const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, () => runtime.reserveAuxiliary(), undefined, reserveAdaptiveTaskAttempt)
   ctx.effect(() => () => governor.dispose())
   ctx.llm.registerAdapter(['openai-codex'], createOpenAICodexAdapter(credentials, () => undefined, undefined, undefined,
     undefined, undefined, undefined, undefined, () => false, governor, runtime))

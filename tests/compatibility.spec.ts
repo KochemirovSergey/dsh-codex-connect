@@ -35,6 +35,29 @@ describe('compatibility contract', () => {
     })
   })
 
+  it('checks every mandatory DSH peer and does not require an absent optional command service', async () => {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as {
+      peerDependencies: Record<string, string>; peerDependenciesMeta: Record<string, { optional?: boolean }>
+    }
+    const mandatory = Object.keys(pkg.peerDependencies).filter(name => name.startsWith('@deepseek-ai/dsh-')
+      && pkg.peerDependenciesMeta[name]?.optional !== true).sort()
+    expect([...COMPATIBILITY_CONTRACT.dshPluginApi.packages].sort()).toEqual(mandatory)
+    expect(COMPATIBILITY_CONTRACT.dshPluginApi.packages).not.toContain('@deepseek-ai/dsh-commands')
+    for (const [name, range] of Object.entries(pkg.peerDependencies)) {
+      if (name.startsWith('@deepseek-ai/dsh-')) expect(range).toBe(SUPPORTED_DSH_PLUGIN_API_RANGE)
+    }
+  })
+
+  it('retains the legacy invariant export without requiring its retired host package', async () => {
+    const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as {
+      peerDependencies: Record<string, string>; devDependencies: Record<string, string>; exports: Record<string, unknown>
+    }
+    expect(pkg.peerDependencies).not.toHaveProperty('@deepseek-ai/dsh-invariants')
+    expect(pkg.devDependencies['@deepseek-ai/dsh-invariants']).toBe('0.1.7-rc.1')
+    expect(pkg.exports['./invariant']).toBeDefined()
+    expect(COMPATIBILITY_CONTRACT.dshPluginApi.packages).not.toContain('@deepseek-ai/dsh-invariants')
+  })
+
   it('keeps the packaged compatibility metadata identical to the runtime declaration', async () => {
     expect(JSON.parse(await readFile(new URL('../compatibility.json', import.meta.url), 'utf8'))).toEqual(COMPATIBILITY_CONTRACT)
   })
@@ -49,6 +72,42 @@ describe('compatibility contract', () => {
       { ...compatiblePackages, '@earendil-works/pi-ai': '0.84.4' },
       { ...compatiblePackages, '@deepseek-ai/dsh-llm': '0.1.7-alpha.3', '@deepseek-ai/dsh-llm-pi-ai': '0.1.7-alpha.3', '@deepseek-ai/dsh-compaction': '0.1.7-alpha.3' },
     ]) expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: packages }).status).toBe('unverified')
+  })
+
+  it.each(['0.1.7-rc.1', '0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3'])('accepts exact consistent %s and pi-ai 0.85.1', version => {
+    const packages = { ...compatiblePackages, '@deepseek-ai/dsh-llm': version,
+      '@deepseek-ai/dsh-llm-pi-ai': version, '@deepseek-ai/dsh-compaction': version }
+    expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: packages }).status).toBe('compatible')
+  })
+
+  it.each(['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@deepseek-ai/dsh-compaction'] as const)(
+    'does not accept mixed rc.1/rc.2 or missing %s metadata', name => {
+      const rc2 = { ...compatiblePackages, '@deepseek-ai/dsh-llm': '0.1.7-rc.2',
+        '@deepseek-ai/dsh-llm-pi-ai': '0.1.7-rc.2', '@deepseek-ai/dsh-compaction': '0.1.7-rc.2' }
+      expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: { ...rc2, [name]: '0.1.7-rc.1' } }).status).toBe('unverified')
+      expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: { ...rc2, [name]: undefined } }).status).toBe('unknown')
+    },
+  )
+
+  it.each(['@deepseek-ai/dsh-llm', '@deepseek-ai/dsh-llm-pi-ai', '@deepseek-ai/dsh-compaction'] as const)(
+    'does not accept mixed alpha.2/alpha.3 or missing %s metadata', name => {
+      const alpha3 = { ...compatiblePackages, '@deepseek-ai/dsh-llm': '0.2.1-alpha.3',
+        '@deepseek-ai/dsh-llm-pi-ai': '0.2.1-alpha.3', '@deepseek-ai/dsh-compaction': '0.2.1-alpha.3' }
+      expect(evaluateCompatibility({ nodeVersion: 'v24.13.0', packageVersions: { ...alpha3, [name]: '0.2.1-alpha.2' } }).status).toBe('unverified')
+      expect(evaluateCompatibility({ nodeVersion: 'v24.13.0', packageVersions: { ...alpha3, [name]: undefined } }).status).toBe('unknown')
+    },
+  )
+
+  it('does not infer later prereleases, stable releases, or a new pi-ai pair from declared support', () => {
+    for (const version of ['0.1.7-rc.3', '0.1.7-alpha.2', '0.2.0-rc.3', '0.2.0', '0.2.1-alpha.4', '0.2.1', '0.2.2-alpha.1']) {
+      const packages = { ...compatiblePackages, '@deepseek-ai/dsh-llm': version,
+        '@deepseek-ai/dsh-llm-pi-ai': version, '@deepseek-ai/dsh-compaction': version }
+      expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: packages }).status).toBe('unverified')
+    }
+    expect(evaluateCompatibility({ nodeVersion: 'v24.15.0', packageVersions: {
+      '@deepseek-ai/dsh-llm': '0.1.7-rc.2', '@deepseek-ai/dsh-llm-pi-ai': '0.1.7-rc.2',
+      '@deepseek-ai/dsh-compaction': '0.1.7-rc.2', '@earendil-works/pi-ai': '0.85.2',
+    } }).status).toBe('unverified')
   })
 
   it('marks a declared package mismatch unverified rather than incompatible', () => {
@@ -110,6 +169,12 @@ describe('compatibility contract', () => {
       const report = await detectCompatibility({ nodeVersion: 'v22.19.0', installAnchor: anchor })
       expect(report.status).toBe('compatible')
       expect(JSON.stringify(report)).not.toContain(root)
+
+      const hostPi = join(host, 'node_modules', '@earendil-works', 'pi-ai', 'package.json')
+      await writeFile(hostPi, JSON.stringify({ name: '@earendil-works/pi-ai', version: '0.87.1' }))
+      const ownedReport = await detectCompatibility({ nodeVersion: 'v22.19.0', installAnchor: anchor })
+      expect(ownedReport.status).toBe('compatible')
+      expect(ownedReport.packages['@earendil-works/pi-ai'].installed).toBe('0.85.1')
 
       const llmManifest = join(host, 'node_modules', '@deepseek-ai', 'dsh-llm', 'package.json')
       await writeFile(llmManifest,

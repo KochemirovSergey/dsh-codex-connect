@@ -16,12 +16,15 @@ for (const bad of [null, [], [baseline, baseline], ['invalid'], ['0.1.9'], [base
 assert.throws(() => declaredDshVersions({ dshPluginApi: { version: null, versions } }))
 for (const version of versions) assert.equal(classifyCandidateVersion(version, baseline, versions), 'declared')
 // Holes and future versions never inherit support from a later declared version.
-for (const version of ['0.1.7-rc.2', '0.1.7', '0.1.8', '9.9.9']) {
+for (const version of ['0.1.7-rc.3', '0.1.7', '0.1.8', '9.9.9']) {
   assert.equal(classifyCandidateVersion(version, baseline, versions), 'newer')
 }
 assert.equal(classifyCandidateVersion('0.1.1-rc.2', baseline, versions), 'not-newer')
 
 const root = await mkdtemp(join(tmpdir(), 'canary-multiversion-'))
+const previousStepSummary = process.env.GITHUB_STEP_SUMMARY
+const summaryPath = join(root, 'summary.md')
+process.env.GITHUB_STEP_SUMMARY = summaryPath
 let fixtureRuns = 0
 try {
   async function fixture(version, exitCode = 0, dedupeAgainst = []) {
@@ -52,6 +55,7 @@ try {
       assert.equal(result.report.classification, 'declared-compatible')
       assert.equal(result.report.declaredSupport, true)
       assert.equal(result.report.stage, 'isolated-install')
+      assert.equal(result.report.checkExecuted, true)
       assert.deepEqual(result.child, { version, undeclared: null })
       assert.equal(buildCanaryTrackingIssue(result.report, undefined, metadata), undefined)
     }
@@ -59,10 +63,10 @@ try {
     if (previous === undefined) delete process.env.DSH_UNDECLARED_CANARY_VERSION
     else process.env.DSH_UNDECLARED_CANARY_VERSION = previous
   }
-  const hole = await fixture('0.1.7-rc.2')
+  const hole = await fixture('0.1.7-rc.3')
   assert.equal(hole.report.classification, 'candidate-compatible')
   assert.equal(hole.report.declaredSupport, false)
-  assert.deepEqual(hole.child, { version: '0.1.7-rc.2', undeclared: '1' })
+  assert.deepEqual(hole.child, { version: '0.1.7-rc.3', undeclared: '1' })
   const tracker = buildCanaryTrackingIssue(hole.report, undefined, metadata)
   assert.equal(tracker.state, 'passed-needs-full-validation')
   assert.ok(tracker.body.includes('`0.1.7-rc.1`'))
@@ -71,6 +75,8 @@ try {
   for (const result of [await fixture('0.1.1-rc.2'), await fixture(versions.at(-1), 0, ['latest'])]) {
     assert.equal(result.status, 0)
     assert.equal(result.child, undefined)
+    assert.equal(result.report.status, 'skipped')
+    assert.equal(result.report.checkExecuted, false)
     assert.equal(buildCanaryTrackingIssue(result.report, undefined, metadata), undefined)
   }
   const failed = await fixture(versions.at(-1), 1)
@@ -87,7 +93,13 @@ try {
   assert.equal(buildCanaryTrackingIssue(failed.report, infrastructure.report, metadata).state, 'infrastructure-blocked')
   const recovered = await fixture(versions.at(-1))
   assert.equal(buildCanaryTrackingIssue(failed.report, recovered.report, metadata), undefined)
+  const summary = await readFile(summaryPath, 'utf8')
+  assert.match(summary, /DSH next: skipped\n\n- Version: 0\.1\.1-rc\.2\n- Check executed: no/u)
+  assert.match(summary, /DSH next: pass\n\n- Version: 0\.1\.7-rc\.1\n- Check executed: yes/u)
+  assert.ok(!Number.isNaN(Date.parse(recovered.report.checkedAt)))
   console.log(`canary multi-version regression: ${fixtureRuns} child-routing scenarios passed`)
 } finally {
+  if (previousStepSummary === undefined) delete process.env.GITHUB_STEP_SUMMARY
+  else process.env.GITHUB_STEP_SUMMARY = previousStepSummary
   await rm(root, { recursive: true, force: true })
 }

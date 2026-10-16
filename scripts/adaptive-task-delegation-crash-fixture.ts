@@ -1,6 +1,7 @@
 /** Real parent/child execution, externally killed after a completed durable operation. Synthetic transport only. */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { reserveAdaptiveTaskAttempt } from '../src/adaptive-task-scope.ts'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
@@ -12,7 +13,8 @@ import Sessions, { SessionId } from '@deepseek-ai/dsh-session'
 import Projection from '@deepseek-ai/dsh-session-projection'
 import Prompt from '@deepseek-ai/dsh-system-prompt'
 import Tools from '@deepseek-ai/dsh-tools'
-import Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import * as Persistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { selectPersistencePlugin } from './persistence-plugin-fixture.mjs'
 import { AdaptiveTaskDelegation, TASK_DELEGATE_TOOL } from '../src/adaptive-task-delegation.ts'
 import { TaskDelegationHost } from '../src/adaptive-task-delegation-host.ts'
 import { TaskEvidenceManifest } from '../src/adaptive-task-evidence.ts'
@@ -74,7 +76,7 @@ Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: clas
 const ctx = new Context()
 for (const plugin of [Llm, Sessions, Projection, AgentRegistry, Prompt, Tools]) await ctx.plugin(plugin)
 await ctx.plugin(AgentLoop, { agents: [] })
-await ctx.plugin(Persistence, { root: join(root, 'sessions'), packChunks: true,
+await ctx.plugin(selectPersistencePlugin(Persistence), { root: join(root, 'sessions'), packChunks: true,
   compression: process.env.CRASH_COMPRESSION === 'zstd' ? 'zstd' : 'none' })
 const credentials = new OpenAICodexCredentialStore(join(root, 'synthetic-oauth.json'))
 if (phase === 'write') {
@@ -85,7 +87,7 @@ if (phase === 'write') {
 const ledger = new AdaptiveTaskDelegationLedger(join(root, 'tasks'))
 const artifacts = new TaskDelegationArtifacts(join(root, 'artifacts')), host = new TaskDelegationHost(ctx)
 const runtime = new AdaptiveTaskDelegation(ctx, { ledger, host, artifacts: () => artifacts })
-const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, () => runtime.reserveAuxiliary())
+const governor = new OpenAICodexBackendRequests(undefined, undefined, 8, () => runtime.reserveAuxiliary(), undefined, reserveAdaptiveTaskAttempt)
 ctx.effect(() => () => governor.dispose())
 ctx.llm.registerAdapter(['openai-codex'], createOpenAICodexAdapter(credentials, () => undefined, undefined,
   undefined, undefined, undefined, undefined, undefined, () => false, governor, runtime))
